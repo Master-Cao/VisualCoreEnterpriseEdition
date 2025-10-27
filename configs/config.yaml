@@ -1,0 +1,99 @@
+# 主配置示例（统一命名/兼容 VisionCore）
+
+board_mode:
+  enable: true
+  infinite_retry: true
+  retry_delay: 5
+  monitoring:
+    check_interval: 30
+    failure_threshold: 2
+
+logging:
+  enable: true
+  level: INFO
+  console:
+    enable: true
+  file:
+    enable: true
+    path: logs
+    backup_count: 30
+
+camera:
+  enable: true
+  connection:
+    ip: 192.168.2.99
+    port: 2122
+  mode:
+    useSingleStep: true
+
+model:
+  backend: auto              # auto | pc | rknn
+  path: ./Models/seasoning_256x256_3.pt
+  conf_threshold: 0.5
+  nms_threshold: 0.45
+
+mqtt:
+  enable: true
+  connection:
+    broker_host: 192.168.31.224
+    broker_port: 1883
+    client_id: sickvision_headless
+    keepalive: 60
+    username: ""
+    password: ""
+    use_ssl: false
+  qos:
+    publish: 2
+    subscribe: 2
+  message:
+    retain: false
+    max_payload_size: 1048576
+  topics:
+    subscribe:
+      system_command: sickvision/system/command
+    publish:
+      message: PI/robot/message
+
+sftp:
+  enable: true
+  host: 192.168.2.125
+  port: 22
+  username: qt
+  password: "123456"
+  remote_path: /
+  connection_timeout: 15
+
+# 统一 ROI 字段
+roi:
+  enable: false
+  shape: rectangle           # rectangle | semicircle | quarter_tl | quarter_tr | quarter_bl | quarter_br
+  center_x: 128              # 仅圆形/半圆/象限使用
+  center_y: 128
+  radius: 120
+  direction: bottom          # top|bottom|left|right（仅半圆使用）
+  rect:                      # 仅矩形使用
+    x1: 10
+    y1: 10
+    x2: 200
+    y2: 200
+  min_area_px: 3800
+  alpha: 1.0                 # 评分参数：conf^alpha * area^beta
+  beta: 1.0
+
+stability:
+  enable: false
+  debounceTime: 0
+  threshold: 0
+  detectionCount: 0
+  pixelThreshold: 5.0
+  zOffset: 0
+
+# TCP 检测服务
+DetectionServer:
+  enable: true
+  host: 192.168.31.224
+  port: 8888
+  max_connections: 15
+  buffer_size: 4096
+  connection_timeout: 300
+  heartbeat_interval: 30
