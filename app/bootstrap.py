@@ -3,7 +3,7 @@
 
 """
 应用装配（bootstrap）
-说明：加载配置，注册命令路由，启动通信（MQTT/TCP）。
+说明：加载配置，初始化各组件（通信/相机/检测/SFTP），并启动健康监控（无限重试）。
 """
 
 from dataclasses import dataclass
@@ -11,9 +11,8 @@ import os
 import yaml
 import logging
 
-from services.comm.command_router import CommandRouter
-from services.comm.comm_manager import CommManager
 from services.system.log_manager import LogManager
+from services.system.initializer import SystemInitializer
 
 
 def _load_config() -> dict:
@@ -50,26 +49,24 @@ def _init_logger(cfg: dict) -> logging.Logger:
 @dataclass
 class Application:
     config: dict
-    router: CommandRouter
-    comm: CommManager
+    initializer: SystemInitializer
 
     def run(self):
-        print("VisionCorePro starting (comm focus)...")
-        self.comm.start()
-        print("Communication started. Press Ctrl+C to stop.")
+        print("VisionCorePro starting...")
+        self.initializer.start()
+        print("Services started. Monitor is running. Press Ctrl+C to stop.")
         try:
             import time
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             print("Stopping...")
-            self.comm.stop()
+            self.initializer.stop()
 
 
 def build_app() -> Application:
     config = _load_config()
     logger = _init_logger(config)
-    router = CommandRouter()
-    comm = CommManager(config=config, router=router, logger=logger)
+    init = SystemInitializer(config=config, logger=logger)
     logger.info("Application built. Configuration loaded.")
-    return Application(config=config, router=router, comm=comm)
+    return Application(config=config, initializer=init)

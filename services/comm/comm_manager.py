@@ -31,14 +31,76 @@ class CommManager:
             except Exception:
                 pass
 
+    # --- health ---
+    @property
+    def healthy(self) -> bool:
+        mqtt_cfg = (self._config.get("mqtt") or {})
+        tcp_cfg = (self._config.get("DetectionServer") or {})
+        mqtt_enabled = bool(mqtt_cfg.get("enable", False))
+        tcp_enabled = bool(tcp_cfg.get("enable", False))
+        mqtt_ok = (not mqtt_enabled) or (self._mqtt is not None and self._mqtt.healthy)
+        tcp_ok = (not tcp_enabled) or (self._tcp is not None and self._tcp.healthy)
+        return mqtt_ok and tcp_ok
+
+    # --- restart helpers ---
+    def restart_mqtt(self) -> bool:
+        mqtt_cfg = (self._config.get("mqtt") or {})
+        if not bool(mqtt_cfg.get("enable", False)):
+            return True
+        try:
+            if self._mqtt:
+                try:
+                    self._mqtt.disconnect()
+                except Exception:
+                    pass
+            self._mqtt = MqttClient(mqtt_cfg, logger=self._logger)
+            self._mqtt.set_general_callback(self._make_mqtt_router_cb())
+            ok = self._mqtt.connect()
+            return ok
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"重启 MQTT 失败: {e}")
+            return False
+
+    def restart_tcp(self) -> bool:
+        tcp_cfg = (self._config.get("DetectionServer") or {})
+        if not bool(tcp_cfg.get("enable", False)):
+            return True
+        try:
+            if self._tcp:
+                try:
+                    self._tcp.stop()
+                except Exception:
+                    pass
+            self._tcp = TcpServer(tcp_cfg, logger=self._logger)
+            self._tcp.set_message_callback(self._make_tcp_router_cb())
+            ok = self._tcp.start()
+            return ok
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"重启 TCP 失败: {e}")
+            return False
+
     # --- internal ---
     def _start_mqtt(self):
         mqtt_cfg = (self._config.get("mqtt") or {})
         if not bool(mqtt_cfg.get("enable", False)):
             return
         self._mqtt = MqttClient(mqtt_cfg, logger=self._logger)
+        self._mqtt.set_general_callback(self._make_mqtt_router_cb())
+        ok = self._mqtt.connect()
+        if not ok and self._logger:
+            self._logger.error("MQTT connect failed")
 
-        # 将通用回调接入路由：payload 预期为 {"command": str, "data": any}
+    def _start_tcp(self):
+        tcp_cfg = (self._config.get("DetectionServer") or {})
+        if not bool(tcp_cfg.get("enable", False)):
+            return
+        self._tcp = TcpServer(tcp_cfg, logger=self._logger)
+        self._tcp.set_message_callback(self._make_tcp_router_cb())
+        self._tcp.start()
+
+    def _make_mqtt_router_cb(self):
         def _on_message(msg):
             try:
                 payload = getattr(msg, "payload", None)
@@ -49,28 +111,11 @@ class CommManager:
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"MQTT route error: {e}")
-                else:
-                    print(f"MQTT route error: {e}")
+        return _on_message
 
-        try:
-            self._mqtt.set_general_callback(_on_message)
-        except Exception:
-            pass
-
-        # 启动连接（同步）
-        ok = self._mqtt.connect()
-        if not ok and self._logger:
-            self._logger.error("MQTT connect failed")
-
-    def _start_tcp(self):
-        tcp_cfg = (self._config.get("DetectionServer") or {})
-        if not bool(tcp_cfg.get("enable", False)):
-            return
-        self._tcp = TcpServer(tcp_cfg, logger=self._logger)
-
-        def _on_message(client_id: str, line: str) -> Optional[str]:
+    def _make_tcp_router_cb(self):
+        def _on_message(client_id: str, line: str):
             try:
-                # 简单协议：直接将行作为 command 或 JSON 载荷
                 import json
                 command = line
                 data: Dict[str, Any] = {}
@@ -82,12 +127,9 @@ class CommManager:
                 except Exception:
                     pass
                 result = self._router.route(command, data)
-                # 仅当业务返回字符串时透传给客户端
                 return result if isinstance(result, str) else None
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"TCP route error: {e}")
                 return None
-
-        self._tcp.set_message_callback(_on_message)
-        self._tcp.start()
+        return _on_message

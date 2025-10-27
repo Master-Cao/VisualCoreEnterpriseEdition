@@ -9,6 +9,13 @@ SICK 相机服务封装（基于官方 SDK common 包）
 
 import logging
 from typing import Any, Dict, Optional
+import os
+import sys
+
+# 确保官方 SDK 的顶层包名 'common' 可被导入
+_SICK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "sick"))
+if _SICK_ROOT not in sys.path:
+    sys.path.insert(0, _SICK_ROOT)
 
 from infrastructure.sick.common.Control import Control
 from infrastructure.sick.common.Stream import Streaming
