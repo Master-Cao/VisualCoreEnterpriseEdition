@@ -30,6 +30,9 @@ class SystemInitializer:
 
     # 装配与启动
     def start(self):
+        # 路由注册（在通信启动前完成），并先绑定可用依赖
+        self.router.register_default()
+        self.router.bind(config=self._cfg, logger=self._logger)
         # 通信
         self.comm = CommManager(config=self._cfg, router=self.router, logger=self._logger)
         self.comm.start()
@@ -43,12 +46,16 @@ class SystemInitializer:
             use_single = bool((cam_cfg.get("mode") or {}).get("useSingleStep", True))
             self.camera = SickCamera(ip=ip, port=port, use_single_step=use_single, logger=self._logger)
             self.camera.connect()
+            # 绑定相机
+            self.router.bind(camera=self.camera)
             if self._logger:
                 self._logger.info("相机已连接")
         # 检测
         try:
             self.detector = create_detector(self._cfg, logger=self._logger)
             self.detector.load()
+            # 绑定检测
+            self.router.bind(detector=self.detector)
             if self._logger:
                 self._logger.info("检测器已加载")
         except Exception as e:
@@ -60,6 +67,8 @@ class SystemInitializer:
         if bool(sftp_cfg.get("enable", False)):
             try:
                 self.sftp = SftpClient(sftp_cfg, logger=self._logger)
+                # 绑定 SFTP
+                self.router.bind(sftp=self.sftp)
                 if self._logger:
                     self._logger.info("SFTP 客户端已就绪")
             except Exception as e:
@@ -68,6 +77,9 @@ class SystemInitializer:
                 self.sftp = None
         # 监控
         self._setup_monitor()
+        # 绑定监控
+        if self.monitor:
+            self.router.bind(monitor=self.monitor)
 
     def stop(self):
         try:
@@ -160,3 +172,4 @@ class SystemInitializer:
     def _noop_restart() -> bool:
         # SFTP 客户端为按需连接，重启意义不大，保持无限重试由 check 触发
         return True
+

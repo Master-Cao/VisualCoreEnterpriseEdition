@@ -103,11 +103,24 @@ class CommManager:
     def _make_mqtt_router_cb(self):
         def _on_message(msg):
             try:
+                import json
                 payload = getattr(msg, "payload", None)
                 if isinstance(payload, dict):
                     command = str(payload.get("command", ""))
                     data = payload.get("data")
-                    self._router.route(command, data if isinstance(data, dict) else {"data": data})
+                    result = self._router.route(command, data if isinstance(data, dict) else {"data": data})
+                    # 按配置发布响应（若有返回值）
+                    if result is not None and self._mqtt is not None:
+                        try:
+                            pub_map = (self._config.get("mqtt") or {}).get("topics", {}).get("publish", {})
+                            topic = pub_map.get("message")
+                            if topic:
+                                payload_out = result
+                                if not isinstance(payload_out, str):
+                                    payload_out = json.dumps(payload_out, ensure_ascii=False)
+                                self._mqtt.publish(topic, payload_out)
+                        except Exception:
+                            pass
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"MQTT route error: {e}")
