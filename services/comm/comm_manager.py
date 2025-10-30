@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 from .mqtt_client import MqttClient
 from .tcp_server import TcpServer
 from .command_router import CommandRouter
+from domain.models.mqtt import MQTTResponse
+from domain.enums.commands import MessageType
 
 
 class CommManager:
@@ -108,16 +110,21 @@ class CommManager:
                 if isinstance(payload, dict):
                     command = str(payload.get("command", ""))
                     data = payload.get("data")
-                    result = self._router.route(command, data if isinstance(data, dict) else {"data": data})
-                    # 按配置发布响应（若有返回值）
-                    if result is not None and self._mqtt is not None:
+                    req = MQTTResponse(
+                        command=command,
+                        component=str(payload.get("component", "system")),
+                        messageType=MessageType.INFO,
+                        message=str(payload.get("message", "")),
+                        data=data if isinstance(data, dict) else {"data": data},
+                    )
+                    result = self._router.route(req)
+                    # 按配置发布响应
+                    if isinstance(result, MQTTResponse) and self._mqtt is not None:
                         try:
                             pub_map = (self._config.get("mqtt") or {}).get("topics", {}).get("publish", {})
                             topic = pub_map.get("message")
                             if topic:
-                                payload_out = result
-                                if not isinstance(payload_out, str):
-                                    payload_out = json.dumps(payload_out, ensure_ascii=False)
+                                payload_out = json.dumps(result.to_dict(), ensure_ascii=False)
                                 self._mqtt.publish(topic, payload_out)
                         except Exception:
                             pass
@@ -139,8 +146,19 @@ class CommManager:
                         data = obj.get("data") or {}
                 except Exception:
                     pass
-                result = self._router.route(command, data)
-                return result if isinstance(result, str) else None
+                req = MQTTResponse(
+                    command=command,
+                    component="tcp",
+                    messageType=MessageType.INFO,
+                    message="",
+                    data=data,
+                )
+                result = self._router.route(req)
+                # TCP 仅在 catch 时回写字符串
+                if isinstance(result, MQTTResponse) and result.command == "catch":
+                    resp = (result.data or {}).get("response")
+                    return str(resp) if isinstance(resp, str) else None
+                return None
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"TCP route error: {e}")

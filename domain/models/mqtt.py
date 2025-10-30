@@ -18,7 +18,7 @@ class MQTTResponse:
         return {
             "command": self.command,
             "component": self.component,
-            "messageType": self.messageType,
+            "messageType": self.messageType.value if hasattr(self.messageType, "value") else str(self.messageType),
             "message": self.message,
             "data": self.data,
             "timestamp": self.timestamp or datetime.now().timestamp(),
