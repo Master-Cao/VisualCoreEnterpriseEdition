@@ -214,5 +214,4 @@ logs/
 *.log
 
 # Local runtime configs (do not commit secrets)
-configs/config.yaml
 configs/transformation_matrix.json
