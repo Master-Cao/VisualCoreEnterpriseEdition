@@ -8,7 +8,7 @@ SICK 相机服务封装（基于官方 SDK common 包）
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Sequence, Tuple, Union
 import os
 import sys
 
@@ -24,7 +24,26 @@ from infrastructure.sick.common.Streaming.Data import Data
 
 
 class SickCamera:
-    def __init__(self, ip: str, port: int = 2122, protocol: str = "Cola2", use_single_step: bool = True, logger: Optional[logging.Logger] = None):
+    _LEVEL_ALIASES = {
+        "run": Control.USERLEVEL_OPERATOR,
+        "operator": Control.USERLEVEL_OPERATOR,
+        "maintenance": Control.USERLEVEL_MAINTENANCE,
+        "maint": Control.USERLEVEL_MAINTENANCE,
+        "client": Control.USERLEVEL_AUTH_CLIENT,
+        "authorizedclient": Control.USERLEVEL_AUTH_CLIENT,
+        "authclient": Control.USERLEVEL_AUTH_CLIENT,
+        "service": Control.USERLEVEL_SERVICE,
+    }
+
+    def __init__(
+        self,
+        ip: str,
+        port: int = 2122,
+        protocol: str = "Cola2",
+        use_single_step: bool = True,
+        logger: Optional[logging.Logger] = None,
+        login_attempts: Optional[Iterable[Union[Tuple[Union[int, str], str], Dict[str, Any]]]] = None,
+    ):
         self._ip = ip
         self._port = port
         self._protocol = protocol
@@ -33,6 +52,7 @@ class SickCamera:
 
         self._ctrl: Optional[Control] = None
         self._stream: Optional[Streaming] = None
+        self._login_attempts: Sequence[Tuple[int, str]] = self._normalise_login_attempts(login_attempts)
         self.is_connected = False
 
     def connect(self) -> bool:
@@ -40,6 +60,7 @@ class SickCamera:
             # 控制通道
             self._ctrl = Control(self._ip, self._protocol, control_port=self._port)
             self._ctrl.open()
+            self._perform_login()
             try:
                 name, version = self._ctrl.getIdent()
                 self._logger.info(f"Connected device: {name.decode('utf-8')}, version: {version.decode('utf-8')}")
@@ -67,6 +88,64 @@ class SickCamera:
             self._logger.error(f"SickCamera connect failed: {e}")
             self.is_connected = False
             return False
+
+    def _normalise_login_attempts(
+        self,
+        attempts: Optional[Iterable[Union[Tuple[Union[int, str], str], Dict[str, Any]]]],
+    ) -> Sequence[Tuple[int, str]]:
+        default = [
+            (Control.USERLEVEL_SERVICE, "123456"),
+            (Control.USERLEVEL_AUTH_CLIENT, "CLIENT"),
+        ]
+        if not attempts:
+            return default
+
+        result = []
+        for item in attempts:
+            level_raw: Union[int, str, None]
+            password: Optional[str]
+            if isinstance(item, dict):
+                level_raw = item.get("level")
+                password = item.get("password")
+            elif isinstance(item, tuple) and len(item) >= 2:
+                level_raw = item[0]
+                password = item[1]
+            else:
+                continue
+
+            resolved_level = self._resolve_user_level(level_raw)
+            if resolved_level is None or password is None:
+                continue
+            result.append((resolved_level, str(password)))
+
+        return result or default
+
+    def _resolve_user_level(self, value: Union[int, str, None]) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        key = str(value).strip().lower()
+        return self._LEVEL_ALIASES.get(key)
+
+    def _perform_login(self) -> None:
+        if not self._ctrl:
+            return
+
+        for level, password in self._login_attempts:
+            try:
+                self._ctrl.login(level, password)
+                level_name = None
+                try:
+                    level_name = Control.USER_LEVEL_NAMES[level]
+                except Exception:
+                    level_name = str(level)
+                self._logger.info(f"登录设备成功，级别 {level_name}")
+                return
+            except Exception as exc:
+                self._logger.warning(f"尝试登录级别 {level} 失败: {exc}")
+
+        raise RuntimeError("未能成功登录 SICK 相机，无法继续后续写操作")
 
     def disconnect(self):
         try:

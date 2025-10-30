@@ -28,7 +28,13 @@ def handle_get_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
 
 def handle_save_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
     try:
-        cfg = (req.data or {}).get("config") if isinstance(req.data, dict) else None
+        cfg = None
+        import json
+        try:
+            parsed = json.loads(req.data['data'])
+        except Exception as parse_err:
+            raise ValueError(f"invalid_config_format: {parse_err}")
+        cfg = parsed.get("config") if isinstance(parsed, dict) else None
         if isinstance(cfg, dict):
             ctx.config.clear()
             ctx.config.update(cfg)

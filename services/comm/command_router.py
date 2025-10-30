@@ -29,10 +29,14 @@ class CommandRouter:
         )
 
     def register(self, command: str, handler: Callable[[MQTTResponse], MQTTResponse]):
-        self._handlers[command] = handler
+        key = self._normalize_command(command)
+        if not key:
+            raise ValueError("Command name must be non-empty")
+        self._handlers[key] = handler
 
     def route(self, req: MQTTResponse) -> MQTTResponse:
-        handler = self._handlers.get(req.command)
+        normalized = self._normalize_command(req.command)
+        handler = self._handlers.get(normalized)
         if not handler:
             raise ValueError(f"Unknown command: {req.command}")
         return handler(req)
@@ -59,3 +63,12 @@ class CommandRouter:
         self.register("catch", lambda req: h_tcp.handle_catch(req, self._ctx))
 
     # 处理逻辑已全部下沉至 services/comm/handlers/*
+
+    @staticmethod
+    def _normalize_command(command: Any) -> str:
+        if command is None:
+            return ""
+        try:
+            return str(command).strip().upper()
+        except Exception:
+            return ""

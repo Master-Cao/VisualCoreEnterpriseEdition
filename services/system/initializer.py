@@ -44,7 +44,15 @@ class SystemInitializer:
             ip = (cam_cfg.get("connection") or {}).get("ip", "192.168.2.99")
             port = int((cam_cfg.get("connection") or {}).get("port", 2122))
             use_single = bool((cam_cfg.get("mode") or {}).get("useSingleStep", True))
-            self.camera = SickCamera(ip=ip, port=port, use_single_step=use_single, logger=self._logger)
+            auth_cfg = (cam_cfg.get("auth") or {})
+            login_attempts = auth_cfg.get("loginAttempts")
+            self.camera = SickCamera(
+                ip=ip,
+                port=port,
+                use_single_step=use_single,
+                logger=self._logger,
+                login_attempts=login_attempts,
+            )
             self.camera.connect()
             # 绑定相机
             self.router.bind(camera=self.camera)

@@ -106,28 +106,49 @@ class CommManager:
         def _on_message(msg):
             try:
                 import json
-                payload = getattr(msg, "payload", None)
+                if not isinstance(msg, dict):
+                    raise TypeError(f"Unexpected MQTT message type: {type(msg)}")
+
+                payload = msg.get("payload")
+                command = ""
+                component = "system"
+                message = ""
+                data = {}
+
                 if isinstance(payload, dict):
                     command = str(payload.get("command", ""))
-                    data = payload.get("data")
-                    req = MQTTResponse(
-                        command=command,
-                        component=str(payload.get("component", "system")),
-                        messageType=MessageType.INFO,
-                        message=str(payload.get("message", "")),
-                        data=data if isinstance(data, dict) else {"data": data},
-                    )
-                    result = self._router.route(req)
-                    # 按配置发布响应
-                    if isinstance(result, MQTTResponse) and self._mqtt is not None:
-                        try:
-                            pub_map = (self._config.get("mqtt") or {}).get("topics", {}).get("publish", {})
-                            topic = pub_map.get("message")
-                            if topic:
-                                payload_out = json.dumps(result.to_dict(), ensure_ascii=False)
-                                self._mqtt.publish(topic, payload_out)
-                        except Exception:
-                            pass
+                    component = str(payload.get("component", component))
+                    message = str(payload.get("message", message))
+                    raw_data = payload.get("data")
+                    if isinstance(raw_data, dict):
+                        data = raw_data
+                    elif raw_data is not None:
+                        data = {"data": raw_data}
+                elif payload is not None:
+                    command = str(payload)
+
+                command = command.strip()
+                if not command:
+                    return
+
+                req = MQTTResponse(
+                    command=command,
+                    component=component,
+                    messageType=MessageType.INFO,
+                    message=message,
+                    data=data,
+                )
+                result = self._router.route(req)
+                # 按配置发布响应
+                if isinstance(result, MQTTResponse) and self._mqtt is not None:
+                    try:
+                        pub_map = (self._config.get("mqtt") or {}).get("topics", {}).get("publish", {})
+                        topic = pub_map.get("message")
+                        if topic:
+                            payload_out = json.dumps(result.to_dict(), ensure_ascii=False)
+                            self._mqtt.publish(topic, payload_out)
+                    except Exception:
+                        pass
             except Exception as e:
                 if self._logger:
                     self._logger.error(f"MQTT route error: {e}")
