@@ -13,16 +13,11 @@ from typing import Any, Dict, Callable, Optional, List
 import time
 import threading
 
-try:
-    import paho.mqtt.client as mqtt
-except Exception as e:
-    mqtt = None  # 运行时若缺失，将在初始化时报错
+import paho.mqtt.client as mqtt
 
 
 class MqttClient:
     def __init__(self, config: Dict[str, Any], logger: Optional[Any] = None):
-        if mqtt is None:
-            raise ImportError("paho-mqtt 未安装，无法启用 MQTT")
         self._logger = logger
         self._cfg = config or {}
         self._conn = self._cfg.get("connection", {})
@@ -148,6 +143,11 @@ class MqttClient:
                 "qos": msg.qos,
                 "retain": msg.retain,
             }
+            if self._logger:
+                try:
+                    self._logger.info("MQTT message received", extra={"topic": m["topic"], "payload": m["payload"], "qos": m["qos"], "retain": m["retain"]})
+                except Exception:
+                    self._logger.info(f"MQTT message received: topic={m['topic']} payload={m['payload']} qos={m['qos']} retain={m['retain']}")
             # 主题回调
             cbs = self._topic_cbs.get(msg.topic) or []
             for cb in cbs:

@@ -4,15 +4,13 @@
 from typing import List, Optional
 import logging
 
+from ultralytics import YOLO  # type: ignore
+
 from .base import DetectionService, DetectionBox
 
 
 class PCUltralyticsDetector(DetectionService):
     def __init__(self, model_path: str, conf_threshold: float = 0.5, logger: Optional[logging.Logger] = None):
-        try:
-            from ultralytics import YOLO  # type: ignore
-        except Exception as e:
-            raise ImportError("未安装 ultralytics，无法在 PC 平台进行检测")
         self._YOLO = YOLO
         self._model_path = model_path
         self._conf = conf_threshold

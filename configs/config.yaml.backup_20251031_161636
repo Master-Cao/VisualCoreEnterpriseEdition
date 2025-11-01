@@ -55,10 +55,10 @@ mqtt:
       message: PI/robot/message
 roi:
   enable: true
-  width: 200
-  height: 100
-  offsetx: 300
-  offsety: 200
+  width: 2
+  height: 1
+  offsetx: 3
+  offsety: 4
 sftp:
   enable: true
   host: 192.168.2.126

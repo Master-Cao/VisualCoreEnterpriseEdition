@@ -169,12 +169,8 @@ class SystemInitializer:
             return False
 
     def _check_sftp(self) -> bool:
-        try:
-            if self.sftp is None:
-                return False
-            return self.sftp.test()
-        except Exception:
-            return False
+        # SFTP 采用按需连接，保持对象存在即可视为可用，避免频繁执行 test()
+        return self.sftp is not None
 
     @staticmethod
     def _noop_restart() -> bool:

@@ -6,16 +6,11 @@ import os
 import posixpath
 import socket
 
-try:
-    import paramiko  # type: ignore
-except Exception as e:
-    paramiko = None
+import paramiko  # type: ignore
 
 
 class SftpClient:
     def __init__(self, config: dict, logger: Optional[Any] = None):
-        if paramiko is None:
-            raise ImportError("未安装 paramiko，无法启用 SFTP")
         self._logger = logger
         self._cfg = (config or {})
         self._host = self._cfg.get("host", "127.0.0.1")

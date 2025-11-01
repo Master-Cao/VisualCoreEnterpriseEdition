@@ -28,7 +28,7 @@ camera:
       password: CLIENT
 model:
   backend: auto
-  path: models/seasoning_seg_test.pt
+  path: models/seasoning_seg_2.pt
   conf_threshold: 0.5
   nms_threshold: 0.45
 DetectionServer:
@@ -55,16 +55,15 @@ mqtt:
       message: PI/robot/message
 roi:
   enable: true
-  width: 200
-  height: 100
-  offsetx: 300
-  offsety: 200
+  width: 0
+  height: 0
+  offsetx: 0
+  offsety: 0
 sftp:
-  enable: true
+  enable: false
   host: 192.168.2.126
   port: 22
   username: qt
   password: '123456'
   remote_path: /
-  prefix: D://Camera
   connection_timeout: 15

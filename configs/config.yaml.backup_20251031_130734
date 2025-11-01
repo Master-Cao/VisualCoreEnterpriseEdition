@@ -1,3 +1,5 @@
+# VisionCoreEnterpriseEdition 配置（精简版）
+
 logging:
   enable: true
   level: INFO
@@ -7,30 +9,33 @@ logging:
     enable: true
     path: logs
     backup_count: 30
+
 board_mode:
   retry_delay: 5
   monitoring:
     check_interval: 30
     failure_threshold: 1
+
 camera:
   enable: true
   connection:
     ip: 192.168.2.99
     port: 2122
-    timeout: 0
   mode:
     useSingleStep: true
   auth:
     loginAttempts:
-    - level: service
-      password: '123456'
-    - level: client
-      password: CLIENT
+      - level: service
+        password: "123456"
+      - level: client
+        password: "CLIENT"
+
 model:
-  backend: auto
-  path: models/seasoning_seg_test.pt
+  backend: auto         # auto/pc/rknn（Windows 上使用 rknn 时需显式指定）
+  path: models/yolov8n-seg.float.rknn
   conf_threshold: 0.5
   nms_threshold: 0.45
+
 DetectionServer:
   enable: true
   host: 192.168.2.126
@@ -39,6 +44,7 @@ DetectionServer:
   buffer_size: 4096
   connection_timeout: 300
   heartbeat_interval: 30
+
 mqtt:
   enable: true
   connection:
@@ -53,18 +59,21 @@ mqtt:
       system_command: sickvision/system/command
     publish:
       message: PI/robot/message
+
 roi:
-  enable: true
-  width: 200
-  height: 100
-  offsetx: 300
-  offsety: 200
+  enable: false
+  width: 0
+  height: 0
+  offsetx: 0
+  offsety: 0
+
 sftp:
-  enable: true
+  enable: false
   host: 192.168.2.126
   port: 22
   username: qt
-  password: '123456'
-  remote_path: /
-  prefix: D://Camera
+  password: "123456"
+  remote_path: "/"
   connection_timeout: 15
+
+

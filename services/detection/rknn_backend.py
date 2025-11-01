@@ -5,16 +5,16 @@ from typing import List, Optional
 import logging
 import numpy as np
 import cv2
+try:
+    from rknn.api import RKNN  # type: ignore
+except ImportError:
+    RKNN = None
 
 from .base import DetectionService, DetectionBox
 
 
 class RKNNDetector(DetectionService):
     def __init__(self, model_path: str, conf_threshold: float = 0.5, nms_threshold: float = 0.45, logger: Optional[logging.Logger] = None):
-        try:
-            from rknn.api import RKNN  # type: ignore
-        except Exception:
-            raise ImportError("未安装 rknn-toolkit2，无法使用 RKNN 检测")
         self._RKNN = RKNN
         self._model_path = model_path
         self._conf = conf_threshold
