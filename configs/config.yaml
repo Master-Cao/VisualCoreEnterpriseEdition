@@ -59,6 +59,7 @@ roi:
   height: 100
   offsetx: 300
   offsety: 200
+  minArea: 2500
 sftp:
   enable: true
   host: 192.168.2.126

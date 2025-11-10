@@ -18,6 +18,7 @@ from services.comm.handlers import camera as h_camera
 from services.comm.handlers import detection as h_detection
 from services.comm.handlers import sftp as h_sftp
 from services.comm.handlers import tcp as h_tcp
+from services.comm.handlers import calibration as h_calibration
 
 
 class CommandRouter:
@@ -54,11 +55,13 @@ class CommandRouter:
         self.register(VisionCoreCommands.SAVE_CONFIG.value, lambda req: h_config.handle_save_config(req, self._ctx))
         self.register(VisionCoreCommands.GET_SYSTEM_STATUS.value, lambda req: h_system.handle_get_system_status(req, self._ctx))
         self.register(VisionCoreCommands.RESTART.value, lambda req: h_system.handle_restart(req, self._ctx))
-        # 图像/标定/模型/SFTP
+        # 图像/模型/SFTP
         self.register(VisionCoreCommands.GET_IMAGE.value, lambda req: h_camera.handle_get_image(req, self._ctx))
-        self.register(VisionCoreCommands.GET_CALIBRAT_IMAGE.value, lambda req: h_camera.handle_get_calibrat_image(req, self._ctx))
         self.register(VisionCoreCommands.MODEL_TEST.value, lambda req: h_detection.handle_model_test(req, self._ctx))
         self.register(VisionCoreCommands.SFTP_TEST.value, lambda req: h_sftp.handle_sftp_test(req, self._ctx))
+        # 坐标标定（两步流程）
+        self.register(VisionCoreCommands.GET_CALIBRAT_IMAGE.value, lambda req: h_calibration.handle_get_calibrat_image(req, self._ctx))
+        self.register(VisionCoreCommands.COORDINATE_CALIBRATION.value, lambda req: h_calibration.handle_coordinate_calibration(req, self._ctx))
         # TCP 专用命令（兼容已有协议）
         self.register("catch", lambda req: h_tcp.handle_catch(req, self._ctx))
 

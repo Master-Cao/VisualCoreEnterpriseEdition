@@ -158,15 +158,19 @@ class CommManager:
         def _on_message(client_id: str, line: str):
             try:
                 import json
-                command = line
-                data: Dict[str, Any] = {}
+                command = line.strip()
+                data: Dict[str, Any] = {"client_id": client_id}
+                
+                # 尝试解析JSON格式的命令
                 try:
                     obj = json.loads(line)
                     if isinstance(obj, dict):
                         command = str(obj.get("command", command))
-                        data = obj.get("data") or {}
+                        if isinstance(obj.get("data"), dict):
+                            data.update(obj.get("data"))
                 except Exception:
                     pass
+                
                 req = MQTTResponse(
                     command=command,
                     component="tcp",
@@ -175,10 +179,17 @@ class CommManager:
                     data=data,
                 )
                 result = self._router.route(req)
-                # TCP 仅在 catch 时回写字符串
-                if isinstance(result, MQTTResponse) and result.command == "catch":
-                    resp = (result.data or {}).get("response")
-                    return str(resp) if isinstance(resp, str) else None
+                
+                # TCP响应处理
+                if isinstance(result, MQTTResponse):
+                    # catch命令返回特殊格式的字符串
+                    if result.command == "catch" or command.lower() == "catch":
+                        resp = (result.data or {}).get("response")
+                        return str(resp) if isinstance(resp, str) else None
+                    # 其他命令可以返回JSON格式
+                    elif result.data:
+                        return json.dumps(result.to_dict(), ensure_ascii=False)
+                
                 return None
             except Exception as e:
                 if self._logger:
