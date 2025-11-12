@@ -145,9 +145,9 @@ class MqttClient:
             }
             if self._logger:
                 try:
-                    self._logger.info("MQTT message received", extra={"topic": m["topic"], "payload": m["payload"], "qos": m["qos"], "retain": m["retain"]})
+                    self._logger.info(f"MQTT message received: topic={m['topic']} payload={m['payload']} qos={m['qos']} retain={m['retain']}", extra={"topic": m["topic"], "payload": m["payload"], "qos": m["qos"], "retain": m["retain"]})
                 except Exception:
-                    self._logger.info(f"MQTT message received: topic={m['topic']} payload={m['payload']} qos={m['qos']} retain={m['retain']}")
+                    self._logger.info(f"发生错误:MQTT message received: topic={m['topic']} payload={m['payload']} qos={m['qos']} retain={m['retain']}")
             # 主题回调
             cbs = self._topic_cbs.get(msg.topic) or []
             for cb in cbs:

@@ -49,7 +49,6 @@ class SickCamera:
         self._protocol = protocol
         self._use_single_step = use_single_step
         self._logger = logger or logging.getLogger(__name__)
-
         self._ctrl: Optional[Control] = None
         self._stream: Optional[Streaming] = None
         self._login_attempts: Sequence[Tuple[int, str]] = self._normalise_login_attempts(login_attempts)
@@ -63,7 +62,8 @@ class SickCamera:
             self._perform_login()
             try:
                 name, version = self._ctrl.getIdent()
-                self._logger.info(f"Connected device: {name.decode('utf-8')}, version: {version.decode('utf-8')}")
+                self.camera_name = name.decode("utf-8")
+                self._logger.info(f"Connected device: {self.camera_name}, version: {version.decode('utf-8')}")
             except Exception:
                 self._logger.info("Connected to device (no ident)")
 
@@ -88,6 +88,9 @@ class SickCamera:
             self._logger.error(f"SickCamera connect failed: {e}")
             self.is_connected = False
             return False
+
+    def get_camera_name(self) -> Optional[str]:
+        return getattr(self, "camera_name", None)
 
     def _normalise_login_attempts(
         self,

@@ -16,13 +16,46 @@ from .context import CommandContext
 
 def handle_get_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
     cfg = ctx.config or {}
+    
+    # 获取相机名称
+    camera_name = None
+    if ctx.camera and hasattr(ctx.camera, 'get_camera_name'):
+        try:
+            camera_name = ctx.camera.get_camera_name()
+        except Exception:
+            camera_name = None
+    
+    # 提取关键配置
+    camera_cfg = cfg.get("camera") or {}
+    mqtt_cfg = cfg.get("mqtt") or {}
+    mqtt_conn = mqtt_cfg.get("connection") or {}
+    
+    # 构建精简配置
+    simplified_config = {
+        "roi": cfg.get("roi") or {},
+        "camera": {
+            "name": camera_name,
+            "ip": (camera_cfg.get("connection") or {}).get("ip"),
+            "port": (camera_cfg.get("connection") or {}).get("port"),
+            "isConnected": ctx.camera.is_connected,
+            "enable": camera_cfg.get("enable", False),
+        },
+        "mqtt": {
+            "broker_host": mqtt_conn.get("broker_host"),
+            "broker_port": mqtt_conn.get("broker_port"),
+        },
+    }
+    
+    # 获取模型信息
     models_info = scan_models(ctx.project_root)
     backend = str(((cfg.get("model") or {}).get("backend") or "")).lower()
     available = filter_models_by_platform(models_info.get("all", []), backend)
+    
     data = {
-        "config": cfg,
+        "config": simplified_config,
         "models": {"all": models_info.get("all", []), "available": available},
     }
+    
     return MQTTResponse(
         command=VisionCoreCommands.GET_CONFIG.value,
         component="config_manager",
