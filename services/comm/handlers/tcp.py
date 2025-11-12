@@ -80,15 +80,12 @@ def handle_catch(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 # 获取坐标（不应用工具偏置）
                 x, y, z = best_target['robot_3d']
                 angle = best_target.get('angle', 0.0)
-                
-                # Z轴补偿和限制
-                z_offset = _get_z_offset(ctx.config)
-                z_final = z + z_offset
-                if z_final < -85.0:
-                    z_final = -85.0
+
+                if z < -85.0:
+                    z = -85.0
                 
                 # 构造响应字符串
-                response_str = f"{detection_count},{x:.3f},{y:.3f},{z_final:.3f},{angle:.3f}"
+                response_str = f"{detection_count},{x:.3f},{y:.3f},{z:.3f},{angle:.3f}"
                 
                 # 记录日志
                 if logger and detection_count > 0:
