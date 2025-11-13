@@ -77,7 +77,26 @@ class TcpServer:
             return False
 
     def stop(self):
+        """停止TCP服务器，释放所有资源"""
+        if not self._is_running:
+            return
+        
+        if self._logger:
+            self._logger.info(f"正在停止TCP服务器 | 活跃连接={len(self._clients)}")
+        
+        # 设置停止标志
         self._is_running = False
+        
+        # 1. 关闭所有客户端连接
+        with self._lock:
+            for cid, info in list(self._clients.items()):
+                try:
+                    info.socket.close()
+                except Exception:
+                    pass
+            self._clients.clear()
+        
+        # 2. 关闭服务器socket
         try:
             if self._server_sock:
                 try:
@@ -87,14 +106,20 @@ class TcpServer:
                 self._server_sock.close()
         finally:
             self._server_sock = None
-        with self._lock:
-            for cid, info in list(self._clients.items()):
+        
+        # 3. 等待accept线程和心跳线程退出（daemon线程会自动结束，但我们尝试等待）
+        for thread_name, thread in [("accept", self._accept_th), ("heartbeat", self._hb_th)]:
+            if thread and thread.is_alive():
                 try:
-                    info.socket.close()
+                    thread.join(timeout=1.0)
+                    if thread.is_alive():
+                        if self._logger:
+                            self._logger.debug(f"TCP {thread_name}线程未能及时退出（daemon线程会随主线程结束）")
                 except Exception:
                     pass
-                info.is_active = False
-            self._clients.clear()
+        
+        if self._logger:
+            self._logger.info("✓ TCP服务器已完全停止")
 
     @property
     def healthy(self) -> bool:

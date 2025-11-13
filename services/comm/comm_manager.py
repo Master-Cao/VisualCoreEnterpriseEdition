@@ -23,15 +23,31 @@ class CommManager:
         self._start_tcp()
 
     def stop(self):
+        """停止通信服务，释放资源"""
         try:
+            # 停止TCP服务器
             if self._tcp:
-                self._tcp.stop()
+                try:
+                    if self._logger:
+                        self._logger.info("停止TCP服务器...")
+                    self._tcp.stop()
+                    if self._logger:
+                        self._logger.info("TCP服务器已停止")
+                except Exception as e:
+                    if self._logger:
+                        self._logger.error(f"停止TCP服务器失败: {e}")
         finally:
+            # 断开MQTT连接
             try:
                 if self._mqtt:
+                    if self._logger:
+                        self._logger.info("断开MQTT连接...")
                     self._mqtt.disconnect()
-            except Exception:
-                pass
+                    if self._logger:
+                        self._logger.info("MQTT已断开")
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f"断开MQTT失败: {e}")
 
     # --- health ---
     @property
@@ -46,6 +62,7 @@ class CommManager:
 
     # --- restart helpers ---
     def restart_mqtt(self) -> bool:
+        """重启MQTT客户端（静默重试，由监控器调用）"""
         mqtt_cfg = (self._config.get("mqtt") or {})
         if not bool(mqtt_cfg.get("enable", False)):
             return True
@@ -57,11 +74,11 @@ class CommManager:
                     pass
             self._mqtt = MqttClient(mqtt_cfg, logger=self._logger)
             self._mqtt.set_general_callback(self._make_mqtt_router_cb())
-            ok = self._mqtt.connect()
+            # verbose=False: 监控器后台重试时静默
+            ok = self._mqtt.connect(verbose=False)
             return ok
         except Exception as e:
-            if self._logger:
-                self._logger.error(f"重启 MQTT 失败: {e}")
+            # 监控器重启时不输出错误日志
             return False
 
     def restart_tcp(self) -> bool:
@@ -85,14 +102,16 @@ class CommManager:
 
     # --- internal ---
     def _start_mqtt(self):
+        """启动MQTT客户端（初始启动，显示详细日志）"""
         mqtt_cfg = (self._config.get("mqtt") or {})
         if not bool(mqtt_cfg.get("enable", False)):
             return
         self._mqtt = MqttClient(mqtt_cfg, logger=self._logger)
         self._mqtt.set_general_callback(self._make_mqtt_router_cb())
-        ok = self._mqtt.connect()
+        # verbose=True: 初始启动时显示详细错误信息
+        ok = self._mqtt.connect(verbose=True)
         if not ok and self._logger:
-            self._logger.error("MQTT connect failed")
+            self._logger.error("MQTT初始连接失败")
 
     def _start_tcp(self):
         tcp_cfg = (self._config.get("DetectionServer") or {})

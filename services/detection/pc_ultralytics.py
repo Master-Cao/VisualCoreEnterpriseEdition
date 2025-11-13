@@ -49,13 +49,30 @@ class PCUltralyticsDetector(DetectionService):
         执行目标检测
         
         Args:
-            image: 输入图像 (BGR格式)
+            image: 输入图像 (BGR格式或灰度图)
         
         Returns:
             List[DetectionBox]: 检测结果列表
         """
         if self._model is None:
             self.load()
+        
+        # 确保输入是3通道BGR图像
+        if len(image.shape) == 2:
+            # 灰度图，转换为3通道BGR
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            if self._logger:
+                self._logger.debug("输入图像为灰度图，已转换为BGR格式")
+        elif len(image.shape) == 3 and image.shape[2] == 1:
+            # 单通道图像（shape为H×W×1），转换为BGR
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            if self._logger:
+                self._logger.debug("输入图像为单通道，已转换为BGR格式")
+        elif len(image.shape) == 3 and image.shape[2] == 4:
+            # RGBA图像，转换为BGR
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+            if self._logger:
+                self._logger.debug("输入图像为RGBA，已转换为BGR格式")
         
         img_h, img_w = image.shape[:2]
         
@@ -75,9 +92,25 @@ class PCUltralyticsDetector(DetectionService):
         # 解析分割结果
         boxes: List[DetectionBox] = []
         
+        # 调试信息
+        if self._logger:
+            self._logger.debug(f"推理结果类型: {type(pred)}")
+            self._logger.debug(f"推理结果属性: {dir(pred)}")
+            if hasattr(pred, 'boxes') and pred.boxes is not None:
+                self._logger.debug(f"检测框数量: {len(pred.boxes)}")
+            if hasattr(pred, 'masks') and pred.masks is not None:
+                self._logger.debug(f"掩码数量: {len(pred.masks)}")
+        
         try:
             # 获取masks (N, H, W) 在256x256尺度
+            if pred.masks is None:
+                if self._logger:
+                    self._logger.warning("推理结果不包含分割掩膜，返回空列表")
+                return []
+            
             masks = pred.masks.data.cpu().numpy()
+            if self._logger:
+                self._logger.debug(f"掩码shape: {masks.shape}, dtype: {masks.dtype}")
         except Exception as e:
             raise RuntimeError("Ultralytics结果不包含分割掩膜，请确认模型为分割模型") from e
         

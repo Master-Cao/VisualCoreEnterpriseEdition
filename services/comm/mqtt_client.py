@@ -45,7 +45,14 @@ class MqttClient:
         self._topic_cbs: Dict[str, List[Callable[[Any], None]]] = {}
 
     # public API
-    def connect(self, timeout: float = 10.0) -> bool:
+    def connect(self, timeout: float = 10.0, verbose: bool = True) -> bool:
+        """
+        连接到MQTT服务器
+        
+        Args:
+            timeout: 连接超时时间（秒）
+            verbose: 是否输出详细日志（False时静默重试）
+        """
         host = self._conn.get("broker_host", "127.0.0.1")
         port = int(self._conn.get("broker_port", 1883))
         keepalive = int(self._conn.get("keepalive", 60))
@@ -55,12 +62,12 @@ class MqttClient:
             self.client.loop_start()
             ok = self._connect_ev.wait(timeout=timeout)
             if not ok:
-                if self._logger:
+                if self._logger and verbose:
                     self._logger.error("MQTT 连接超时")
                 return False
             return self._is_connected
         except Exception as e:
-            if self._logger:
+            if self._logger and verbose:
                 self._logger.error(f"MQTT 连接失败: {e}")
             return False
 

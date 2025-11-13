@@ -52,16 +52,63 @@ class Application:
     initializer: SystemInitializer
 
     def run(self):
-        print("VisionCorePro starting...")
-        self.initializer.start()
-        print("Services started. Monitor is running. Press Ctrl+C to stop.")
+        """运行应用程序，包含完整的启动和关闭逻辑"""
+        import signal
+        import time
+        import sys
+        import threading
+        
+        # 控制主循环的标志和事件
+        self._running = True
+        self._stop_event = threading.Event()
+        
+        # 注册信号处理器，确保优雅关闭
+        def signal_handler(signum, frame):
+            print(f"\n收到停止信号 (signal={signum})...")
+            self._running = False  # 通知主循环退出
+            self._stop_event.set()  # 中断主循环的等待
+            # 注意：不在信号处理器中调用 shutdown，而是让主循环自然退出后调用
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
         try:
-            import time
-            while True:
-                time.sleep(1)
+            print("VisionCorePro starting...")
+            self.initializer.start()
+            print("✓ 服务已启动，监控器正在运行")
+            print("按 Ctrl+C 停止系统")
+            
+            # 主循环（可被快速中断）
+            while self._running:
+                # 使用 Event.wait 替代 time.sleep，可以被信号立即中断
+                if self._stop_event.wait(timeout=1.0):
+                    break  # 收到停止信号，退出循环
+            
+            # 正常退出流程
+            self._shutdown()
+                
         except KeyboardInterrupt:
-            print("Stopping...")
+            # Ctrl+C 会触发此异常
+            print("\n检测到键盘中断...")
+            self._shutdown()
+        except Exception as e:
+            print(f"\n应用程序异常: {e}")
+            self._shutdown()
+            raise
+        finally:
+            # 确保程序退出
+            print("程序即将退出...")
+            sys.exit(0)
+    
+    def _shutdown(self):
+        """优雅关闭应用程序，释放所有资源"""
+        try:
+            print("正在停止系统...")
             self.initializer.stop()
+            print("✓ 系统已完全停止")
+        except Exception as e:
+            print(f"关闭过程中发生异常: {e}")
+            raise
 
 
 def build_app() -> Application:

@@ -8,10 +8,19 @@ logging:
     path: logs
     backup_count: 30
 board_mode:
+  # 重试延迟（秒）- 关键组件启动失败和监控器重启时的等待时间
   retry_delay: 5
+  # 调试模式 - 启用后会保存预热检测的可视化结果到debug目录
+  debug_warmup: true
   monitoring:
+    # 监控检查间隔（秒）- 后台监控器检查组件健康状态的频率
     check_interval: 30
+    # 故障阈值（次）- 连续检查失败多少次后触发重启
     failure_threshold: 1
+  # 启动策略说明：
+  # - 关键组件（相机、检测器、TCP）会在主线程无限重试直到启动成功
+  # - 非关键组件（MQTT、SFTP）允许启动失败，由后台监控器重试
+  # - 所有组件运行时异常都会由监控器在后台无限重试恢复
 camera:
   enable: true
   connection:
@@ -28,7 +37,7 @@ camera:
       password: CLIENT
 model:
   backend: auto
-  path: models/seasoning_seg_test.pt
+  path: models/seg-seasoning2.pt
   conf_threshold: 0.5
   nms_threshold: 0.45
 DetectionServer:
@@ -64,6 +73,7 @@ roi:
       height: 100
       offsetx: 300           
       offsety: 200
+      priority: 1
       
     - name: "backup_area"
       enable: false
@@ -72,62 +82,7 @@ roi:
       height: 120
       offsetx: -100
       offsety: 50
-    
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-    
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-    
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-    
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
-    
-    - name: "backup_area"
-      enable: false
-      shape: "rectangle"
-      width: 150
-      height: 120
-      offsetx: -100
-      offsety: 50
+      priority: 2
       
 sftp:
   enable: true
