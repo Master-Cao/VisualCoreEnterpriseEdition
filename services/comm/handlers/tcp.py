@@ -178,28 +178,18 @@ def _get_camera_frame(ctx: CommandContext) -> Optional[tuple]:
         if not hasattr(camera, 'get_frame'):
             return None
         
-        frame_data = camera.get_frame(convert_to_mm=True)
+        # 使用新的 get_frame 方法，获取所有需要的数据
+        frame_data = camera.get_frame(depth=True, intensity=True, camera_params=True)
         if not frame_data:
             return None
         
-        # 提取图像
+        # 提取处理后的图像和数据
+        image = frame_data.get('intensity_image')
         depthmap = frame_data.get('depthmap')
         camera_params = frame_data.get('cameraParams')
         
-        if not depthmap or not camera_params:
+        if not image or not depthmap or not camera_params:
             return None
-        
-        # 构建图像数组
-        width = getattr(camera_params, 'width', 0)
-        height = getattr(camera_params, 'height', 0)
-        intensity = getattr(depthmap, 'intensity', None)
-        
-        if not intensity or width <= 0 or height <= 0:
-            return None
-        
-        import cv2
-        arr = np.array(list(intensity), dtype=np.float32).reshape((height, width))
-        image = cv2.convertScaleAbs(arr, alpha=0.05, beta=1)
         
         # 提取深度数据
         depth_data = list(getattr(depthmap, 'z', []))

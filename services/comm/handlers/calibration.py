@@ -50,12 +50,12 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
-        # 2. 获取相机帧
-        try:
-            frame = cam.get_frame(convert_to_mm=True)
-        except Exception as capture_err:
+        # 2. 获取相机帧和图像数据
+        # 使用新的 get_frame 方法，获取所有需要的数据
+        result = cam.get_frame(depth=True, intensity=True, camera_params=True)
+        if not result:
             if logger:
-                logger.error(f"获取相机帧失败: {capture_err}")
+                logger.error("获取相机帧失败: get_frame returned None")
             return MQTTResponse(
                 command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
                 component="camera",
@@ -64,17 +64,11 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
-        if not frame:
-            return MQTTResponse(
-                command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
-                component="camera",
-                messageType=MessageType.ERROR,
-                message="no_frame",
-                data={}
-            )
+        img = result.get('intensity_image')
+        depthmap = result.get('depthmap')
+        camera_params = result.get('cameraParams')
         
-        # 3. 提取图像和深度数据
-        img = _frame_to_image(frame)
+        # 3. 检查数据完整性
         if img is None:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
@@ -84,8 +78,6 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
-        depthmap = frame.get('depthmap')
-        camera_params = frame.get('cameraParams')
         if not depthmap or not camera_params:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
@@ -391,31 +383,6 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
 
 
 # ==================== 辅助函数 ====================
-
-def _frame_to_image(frame) -> Optional[np.ndarray]:
-    """从帧数据转换为图像"""
-    try:
-        if frame is None:
-            return None
-        dm = frame.get('depthmap')
-        params = frame.get('cameraParams')
-        if dm is None or params is None:
-            return None
-        
-        width = int(getattr(params, 'width', 0) or getattr(params, 'Width', 0) or 0)
-        height = int(getattr(params, 'height', 0) or getattr(params, 'Height', 0) or 0)
-        intensity = getattr(dm, 'intensity', None)
-        
-        if not intensity or width <= 0 or height <= 0:
-            return None
-        
-        arr = np.array(list(intensity), dtype=np.float32).reshape((height, width))
-        img = cv2.convertScaleAbs(arr, alpha=0.05, beta=1)
-        return img
-    
-    except Exception:
-        return None
-
 
 def _sample_depth_mm(depth_data: List[float], u: int, v: int, 
                      width: int, height: int, ksize: int = 5) -> Optional[float]:

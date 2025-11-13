@@ -11,7 +11,7 @@ board_mode:
   # 重试延迟（秒）- 关键组件启动失败和监控器重启时的等待时间
   retry_delay: 5
   # 调试模式 - 启用后会保存预热检测的可视化结果到debug目录
-  debug_warmup: true
+  debug_warmup: false
   monitoring:
     # 监控检查间隔（秒）- 后台监控器检查组件健康状态的频率
     check_interval: 30
@@ -37,6 +37,8 @@ camera:
       password: CLIENT
 model:
   backend: auto
+  model_name: seg-seasoning2.pt
+  model_file: models
   path: models/seg-seasoning2.pt
   conf_threshold: 0.5
   nms_threshold: 0.45

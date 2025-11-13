@@ -50,10 +50,10 @@ def handle_get_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
     models_info = scan_models(ctx.project_root)
     backend = str(((cfg.get("model") or {}).get("backend") or "")).lower()
     available = filter_models_by_platform(models_info.get("all", []), backend)
-    
+    selected_model = cfg.get("model", {}).get("model_name", None)
     data = {
         "config": simplified_config,
-        "models": {"all": models_info.get("all", []), "available": available},
+        "models": {"all": models_info.get("all", []), "available": available, "selected": selected_model},
     }
     
     return MQTTResponse(

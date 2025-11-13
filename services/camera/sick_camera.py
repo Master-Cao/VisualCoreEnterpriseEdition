@@ -22,6 +22,9 @@ from infrastructure.sick.common.Stream import Streaming
 from infrastructure.sick.common.Streaming.BlobServerConfiguration import BlobClientConfig
 from infrastructure.sick.common.Streaming.Data import Data
 
+import cv2
+import numpy as np
+
 
 class SickCamera:
     _LEVEL_ALIASES = {
@@ -172,34 +175,86 @@ class SickCamera:
             self._ctrl = None
             self._stream = None
 
-    def get_frame(self, convert_to_mm: bool = True) -> Optional[Dict[str, Any]]:
+    def get_frame(
+        self,
+        depth: bool = True,
+        intensity: bool = True,
+        camera_params: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        获取相机帧并返回处理后的数据
+        
+        参考 SickSDK._get_frame_data 的实现
+        convert_to_mm 固定为 True
+        
+        Args:
+            depth: 是否返回深度数据（depthmap对象），默认True
+            intensity: 是否返回处理后的强度图像，默认True
+            camera_params: 是否返回相机内参，默认True
+            
+        Returns:
+            dict: {
+                'depthmap': depthmap object or None,  # 原始深度图对象（包含distance/z/intensity/confidence等）
+                'intensity_image': np.ndarray or None,  # 处理后的强度图像
+                'cameraParams': CameraParams or None  # 相机内参
+            }
+            或 None（如果获取失败）
+        """
         if not self.is_connected or not self._ctrl or not self._stream:
-            raise RuntimeError("Camera not connected")
+            self._logger.error("Camera not connected")
+            return None
+            
         try:
             if self._use_single_step:
                 self._ctrl.singleStep()
-            # 请求一帧
-            self._stream.sendBlobRequest()
+            
+            # 获取帧数据（参考 SickSDK._get_frame_data 的实现）
             self._stream.getFrame()
-            raw = bytes(self._stream.frame)
+            wholeFrame = self._stream.frame
+            
+            # 解析数据（convert_to_mm 固定为 True）
             parser = Data()
-            parser.read(raw, convertToMM=convert_to_mm)
-            # 输出关键结构
-            out: Dict[str, Any] = {
-                "hasDepthMap": getattr(parser, "hasDepthMap", False),
-                "hasPolar2D": getattr(parser, "hasPolar2D", False),
-                "hasCartesian": getattr(parser, "hasCartesian", False),
-                "parsing_time_s": getattr(parser, "parsing_time_s", 0.0),
-                "corrupted": getattr(parser, "corrupted", False),
+            parser.read(wholeFrame, convertToMM=True)
+            
+            if not getattr(parser, "hasDepthMap", False):
+                self._logger.error("No depth map data available")
+                return None
+            
+            dm = parser.depthmap
+            params = parser.cameraParams
+            
+            # 准备返回结果
+            result: Dict[str, Any] = {
+                'depthmap': None,
+                'intensity_image': None,
+                'cameraParams': None
             }
-            if getattr(parser, "hasDepthMap", False):
-                out["cameraParams"] = parser.cameraParams
-                out["depthmap"] = parser.depthmap  # 包含 distance/intensity/confidence
-            if getattr(parser, "hasPolar2D", False):
-                out["polar2D"] = parser.polarData2D
-            if getattr(parser, "hasCartesian", False):
-                out["cartesian"] = parser.cartesianData
-            return out
+            
+            # 返回深度图对象（包含所有原始数据：distance, z, intensity, confidence）
+            if depth:
+                result['depthmap'] = dm
+            
+            # 处理强度图像
+            if intensity:
+                # 获取图像尺寸
+                width = int(getattr(params, 'width', 0) or getattr(params, 'Width', 0) or 0)
+                height = int(getattr(params, 'height', 0) or getattr(params, 'Height', 0) or 0)
+                
+                if width > 0 and height > 0:
+                    intensity_data = getattr(dm, 'intensity', None)
+                    if intensity_data:
+                        # 重塑为图像数组
+                        intensity_array = np.array(list(intensity_data), dtype=np.float32).reshape((height, width))
+                        # 调整对比度（与SickSDK._get_frame_data保持一致：alpha=0.05, beta=1）
+                        adjusted_image = cv2.convertScaleAbs(intensity_array, alpha=0.05, beta=1)
+                        result['intensity_image'] = adjusted_image
+            
+            # 返回相机参数
+            if camera_params:
+                result['cameraParams'] = params
+                
+            return result
+            
         except Exception as e:
             self._logger.error(f"SickCamera get_frame failed: {e}")
             return None

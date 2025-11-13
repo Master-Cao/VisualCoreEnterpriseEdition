@@ -190,8 +190,8 @@ class SystemInitializer:
             
             warmup_start = time.time()
             
-            # 尝试取一帧图像
-            frame = self.camera.get_frame(convert_to_mm=True)
+            # 尝试取一帧图像（只获取强度图像以加快预热速度）
+            frame = self.camera.get_frame(depth=False, intensity=True, camera_params=False)
             
             warmup_time = (time.time() - warmup_start) * 1000  # 转换为毫秒
             
@@ -281,31 +281,12 @@ class SystemInitializer:
                     (0, 0, 255),  # 红色
                     2
                 )
-            
             # 保存到debug目录
             debug_dir = "debug"
             os.makedirs(debug_dir, exist_ok=True)
-            
-            # 保存原始图像
-            if len(image.shape) == 2:
-                original_bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            else:
-                original_bgr = image.copy()
-            original_path = os.path.join(debug_dir, "warmup_input_image.jpg")
-            cv2.imwrite(original_path, original_bgr)
-            
             # 保存检测结果
             output_path = os.path.join(debug_dir, "warmup_detection_result.jpg")
             cv2.imwrite(output_path, vis_image)
-            
-            if self._logger:
-                self._logger.info(f"✓ 预热检测可视化已保存:")
-                self._logger.info(f"  - 原始图像: {original_path}")
-                self._logger.info(f"  - 检测结果: {output_path}")
-                self._logger.info(f"  - 图像尺寸: {image.shape}")
-                if detections:
-                    for i, det in enumerate(detections):
-                        self._logger.info(f"  - 检测{i+1}: class={det.class_id}, score={det.score:.3f}, bbox=({det.xmin},{det.ymin})-({det.xmax},{det.ymax})")
             
         except Exception as e:
             if self._logger:

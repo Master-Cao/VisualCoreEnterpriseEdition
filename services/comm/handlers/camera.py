@@ -1,15 +1,9 @@
 # -*- coding: utf-8 -*-
 
-import os
-from datetime import datetime
-from typing import Optional
-
 from domain.enums.commands import VisionCoreCommands, MessageType
 from domain.models.mqtt import MQTTResponse
 from .context import CommandContext
-
-import cv2  # type: ignore
-import numpy as np  # type: ignore
+from .utils import encode_jpg, upload_image_to_sftp
 
 
 def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
@@ -35,12 +29,12 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        try:
-            frame = cam.get_frame(convert_to_mm=True)
-        except Exception as capture_err:
+        # 使用新的 get_frame 方法，只获取强度图像以加快速度
+        result = cam.get_frame(depth=False, intensity=True, camera_params=False)
+        if not result:
             if logger:
                 try:
-                    logger.error(f"camera.get_frame failed: {capture_err}")
+                    logger.error("camera.get_frame failed: returned None")
                 except Exception:
                     pass
             return MQTTResponse(
@@ -51,16 +45,7 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        if not frame:
-            return MQTTResponse(
-                command=VisionCoreCommands.GET_IMAGE.value,
-                component="camera",
-                messageType=MessageType.ERROR,
-                message="no_frame",
-                data={},
-            )
-
-        img = frame_to_image(frame)
+        img = result.get('intensity_image')
         if img is None:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_IMAGE.value,
@@ -80,7 +65,7 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        upload_info = sftp_upload_bytes(sftp, jpg, ctx.project_root, prefix="camera_image")
+        upload_info = upload_image_to_sftp(sftp, jpg, prefix="camera_image")
         if not upload_info:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_IMAGE.value,
@@ -153,66 +138,3 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             message=str(e),
             data={},
         )
-
-
-def frame_to_image(frame) -> Optional["np.ndarray"]:
-    try:
-        if frame is None:
-            return None
-        dm = frame.get("depthmap") if isinstance(frame, dict) else None
-        params = frame.get("cameraParams") if isinstance(frame, dict) else None
-        if dm is not None and params is not None:
-            width = int(getattr(params, "width", 0) or getattr(params, "Width", 0) or 0)
-            height = int(getattr(params, "height", 0) or getattr(params, "Height", 0) or 0)
-            intensity = getattr(dm, "intensity", None)
-            if hasattr(intensity, "__iter__") and width > 0 and height > 0:
-                arr = np.array(list(intensity), dtype=np.float32).reshape((height, width))
-                img = cv2.convertScaleAbs(arr, alpha=0.05, beta=1)
-                return img
-        return None
-    except Exception:
-        return None
-
-
-def encode_jpg(img) -> Optional[bytes]:
-    try:
-        if cv2 is None:
-            return None
-        ok, buf = cv2.imencode(".jpg", img)
-        if not ok:
-            return None
-        return bytes(buf)
-    except Exception:
-        return None
-
-
-def sftp_upload_bytes(sftp, data: bytes, project_root: str, prefix: str = "image") -> Optional[dict]:
-    try:
-        if not sftp or data is None:
-            return None
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"{prefix}_{ts}.jpg"
-        remote_rel = os.path.join("images", filename).replace("\\", "/")
-        ok = sftp.upload_bytes(data, remote_rel)
-        if ok:
-            remote_dir = os.path.dirname(remote_rel).replace("\\", "/")
-            if not remote_dir.startswith("/"):
-                remote_dir = f"/{remote_dir}" if remote_dir else "/"
-            if not remote_dir.endswith("/"):
-                remote_dir = f"{remote_dir}/"
-            remote_file = f"{remote_dir.rstrip('/')}/{filename}"
-            return {
-                "filename": filename,
-                "remote_path": remote_dir,
-                "remote_rel_path": remote_rel,
-                "remote_file": remote_file,
-                "file_size": len(data),
-            }
-        return None
-    except Exception:
-        return None
-
-
-# get_calibrat_image 命令已迁移到 handlers/calibration.py
-# 使用新的黑块检测算法代替 ArUco/棋盘格检测
-# 参见: handle_get_calibrat_image() in handlers/calibration.py
