@@ -58,22 +58,25 @@ mqtt:
       message: visual/system/result
 roi:
   enable: true
-  minArea: 2500
+  minArea: 2800
   regions:
   - name: main_work_area
+    enable: true
     shape: rectangle
     width: 256
-    height: 80
+    height: 120
     offsetx: 0
-    offsety: 60
+    offsety: 0
     priority: 1
   - name: backup_area
+    enable: false
     shape: rectangle
     width: 256
-    height: 80
+    height: 120
     offsetx: 0
-    offsety: 146
+    offsety: 136
     priority: 2
+  priority: 0
 sftp:
   enable: true
   host: 192.168.2.126

@@ -199,7 +199,19 @@ class CommManager:
                 )
                 result = self._router.route(req)
                 
-                # TCP响应处理
+                # 发送结果到MQTT（如果MQTT已启用）
+                if isinstance(result, MQTTResponse) and self._mqtt is not None:
+                    try:
+                        pub_map = (self._config.get("mqtt") or {}).get("topics", {}).get("publish", {})
+                        topic = pub_map.get("message")
+                        if topic:
+                            payload_out = json.dumps(result.to_dict(), ensure_ascii=False)
+                            self._mqtt.publish(topic, payload_out)
+                    except Exception as e:
+                        if self._logger:
+                            self._logger.error(f"发送TCP结果到MQTT失败: {e}")
+                
+                # TCP响应处理（返回给TCP客户端）
                 if isinstance(result, MQTTResponse):
                     # catch命令返回特殊格式的字符串
                     if result.command == "catch" or command.lower() == "catch":

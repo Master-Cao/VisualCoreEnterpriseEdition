@@ -230,9 +230,19 @@ class SickCamera:
                 'cameraParams': None
             }
             
-            # 返回深度图对象（包含所有原始数据：distance, z, intensity, confidence）
+            # 返回深度数据列表（与 VisionCore 中的格式一致）
             if depth:
-                result['depthmap'] = dm
+                # 提取 distance 数据并转换为 list（单位：毫米）
+                distance_data = getattr(dm, 'distance', None)
+                if distance_data is not None:
+                    result['depthmap'] = list(distance_data)
+                else:
+                    # 回退：尝试使用 z 数据
+                    z_data = getattr(dm, 'z', None)
+                    if z_data is not None:
+                        result['depthmap'] = list(z_data)
+                    else:
+                        self._logger.warning("深度图对象没有 distance 或 z 属性")
             
             # 处理强度图像
             if intensity:
@@ -242,7 +252,7 @@ class SickCamera:
                 
                 if width > 0 and height > 0:
                     intensity_data = getattr(dm, 'intensity', None)
-                    if intensity_data:
+                    if intensity_data is not None:
                         # 重塑为图像数组
                         intensity_array = np.array(list(intensity_data), dtype=np.float32).reshape((height, width))
                         # 调整对比度（与SickSDK._get_frame_data保持一致：alpha=0.05, beta=1）

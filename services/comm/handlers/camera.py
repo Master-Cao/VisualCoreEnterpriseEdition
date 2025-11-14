@@ -3,7 +3,7 @@
 from domain.enums.commands import VisionCoreCommands, MessageType
 from domain.models.mqtt import MQTTResponse
 from .context import CommandContext
-from .utils import encode_jpg, upload_image_to_sftp
+from services.shared import ImageUtils, SftpHelper
 
 
 def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
@@ -55,7 +55,7 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        jpg = encode_jpg(img)
+        jpg = ImageUtils.encode_jpg(img)
         if jpg is None:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_IMAGE.value,
@@ -65,7 +65,7 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        upload_info = upload_image_to_sftp(sftp, jpg, prefix="camera_image")
+        upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="camera_image")
         if not upload_info:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_IMAGE.value,
@@ -75,25 +75,14 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
+        # 获取SFTP配置并构建完整路径
+        sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
+        upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+        
         remote_path = upload_info.get("remote_path")
         filename = upload_info.get("filename")
         remote_rel_path = upload_info.get("remote_rel_path")
-        sftp_cfg = {}
-        try:
-            if isinstance(ctx.config, dict):
-                sftp_cfg = ctx.config.get("sftp") or {}
-        except Exception:
-            sftp_cfg = {}
-        prefix = str(sftp_cfg.get("prefix", "")) if isinstance(sftp_cfg, dict) else ""
-        remote_full_path = None
-        if remote_rel_path:
-            rel = str(remote_rel_path)
-            if prefix:
-                base = str(prefix)
-                joiner = "" if base.endswith("/") else "/"
-                remote_full_path = f"{base}{joiner}{rel.lstrip('/')}"
-            else:
-                remote_full_path = rel
+        remote_full_path = upload_info.get("remote_full_path")
         payload = {
             "has_frame": True,
             "filename": filename,

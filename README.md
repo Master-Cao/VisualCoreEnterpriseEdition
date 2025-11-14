@@ -1,6 +1,6 @@
 # VisionCore Enterprise Edition
 
-**企业级工业视觉检测系统** - 高性能、模块化、可扩展
+**企业级工业视觉检测系统** - 高性能、模块化、多线程架构
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
@@ -13,6 +13,7 @@
 - [概述](#概述)
 - [核心特性](#核心特性)
 - [系统架构](#系统架构)
+- [多线程架构](#多线程架构)
 - [目录结构](#目录结构)
 - [核心模块](#核心模块)
 - [支持的命令](#支持的命令)
@@ -20,22 +21,24 @@
 - [配置说明](#配置说明)
 - [部署指南](#部署指南)
 - [开发指南](#开发指南)
-- [文档](#文档)
+- [性能指标](#性能指标)
+- [故障排除](#故障排除)
 - [许可证](#许可证)
 
 ---
 
 ## 概述
 
-VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构版本**，采用清晰的分层架构、模块化设计，专为工业自动化场景打造的高性能视觉检测系统。
+VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构版本**，采用清晰的分层架构、模块化设计、**多线程并发处理**，专为工业自动化场景打造的高性能视觉检测系统。
 
 ### 设计理念
 
 - **分层清晰**: 严格的领域驱动设计（DDD），业务逻辑与基础设施分离
+- **多线程架构**: TCP 多客户端并发、MQTT 异步处理、组件独立监控
 - **可测试性**: 模块化设计，支持单元测试和集成测试
 - **可扩展性**: 工厂模式、策略模式，易于添加新功能
 - **可维护性**: 代码结构清晰，文档完善，注释详细
-- **向后兼容**: 保持与旧版 VisionCore 的协议兼容
+- **高可用性**: 多线程健康监控、自动重连、故障自动恢复
 
 ### 应用场景
 
@@ -50,43 +53,61 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
 
 ### 🎥 多相机支持
 
-- **SICK 3D相机**: 完整的 SICK SDK 集成，支持深度图像和点云
-- **HIK ToF相机**: 海康威视 ToF 相机支持
-- **统一接口**: 抽象的相机接口，易于扩展其他相机品牌
+- **SICK 3D相机**: 完整的 SICK SDK 集成，支持深度图像、强度图像和相机参数获取
+- **自动重连**: 断线自动重连机制，保证系统稳定性
+- **预热机制**: 首次取图预热，减少实际检测延迟
 
 ### 🧠 AI 检测引擎
 
-- **Ultralytics YOLO**: PC端高性能检测，支持分割模型
-- **RKNN 推理**: 嵌入式平台加速（RK3588等）
+- **Ultralytics YOLO**: PC端高性能检测（支持分割模型）
+- **RKNN 推理**: 嵌入式平台加速（RK3588/RK3566等）
 - **工厂模式**: 自动选择最优后端（PC/RKNN/Auto）
 - **灵活配置**: 置信度、NMS阈值可调
+- **预热推理**: 模型加载后预热推理，避免首次检测延迟
 
-### 📡 双通信协议
+### 📡 双通信协议（多线程）
 
-- **TCP 服务器**: 高性能 `catch` 命令，实时检测响应
-- **MQTT 客户端**: 远程命令控制，系统状态监控
-- **命令路由**: 统一的命令分发机制，易于扩展
+- **TCP 服务器**: 
+  - 多线程并发处理，支持多客户端同时连接
+  - 每个客户端独立线程，互不干扰
+  - 心跳检测线程，自动清理超时连接
+  - 高性能 `catch` 命令，实时检测响应（< 200ms）
+- **MQTT 客户端**: 
+  - 独立线程处理消息
+  - 远程命令控制（QoS 2，确保消息可靠送达）
+- **命令路由**: 统一的命令分发机制，易于扩展新命令
+- **优雅降级**: TCP为关键组件，MQTT为非关键组件
 
 ### 📐 坐标标定系统
 
-- **黑块检测**: 鲁棒的黑色标记块检测算法（替代 ArUco/棋盘格）
+- **黑块检测**: 鲁棒的黑色标记块检测算法（12点标定，3x4网格布局）
+- **多种二值化策略**: Otsu、自适应阈值、CLAHE增强
+- **质量评分系统**: 基于形状、对比度、实心度的质量评分
 - **两步工作流**: 
   1. `get_calibrat_image` - 检测黑块并返回世界坐标
   2. `coordinate_calibration` - 接收机器人坐标并执行标定
 - **XY仿射 + Z线性**: 分离的变换模型，适合工业场景
-- **精度验证**: 自动计算 RMSE，质量评级
+- **精度验证**: 自动计算 RMSE，质量评级（优秀/良好/合格/需改进）
 
-### 🔧 系统管理
+### 🔧 系统管理（多线程监控）
 
-- **健康监控**: 实时监控相机、检测器、通信模块状态
+- **多线程健康监控**: 
+  - 每个组件独立监控线程
+  - 定时健康检查（默认30秒）
+  - 异常自动重启
+- **分级启动策略**: 
+  - 关键组件（相机、检测器、TCP）：主线程阻塞重试直到成功
+  - 非关键组件（MQTT、SFTP）：允许失败，后台静默重试
 - **自动重启**: 组件级故障自动恢复机制
-- **日志系统**: 分级日志、按日轮转、控制台+文件输出
-- **配置热重载**: 支持运行时更新配置
+- **日志系统**: 分级日志（INFO/DEBUG/ERROR）、按日轮转、控制台+文件输出
+- **配置管理**: 支持获取和保存配置（带备份）
 
 ### 📁 文件传输
 
-- **SFTP 客户端**: 自动上传检测图像、标定图像
+- **SFTP 客户端**: 自动上传检测图像、标定图像、测试图像
 - **断线重连**: 自动重连机制，保证传输可靠性
+- **静默重试**: 作为非关键组件，连接失败时静默后台重试
+- **路径前缀**: 支持配置远程路径前缀，便于文件管理
 
 ---
 
@@ -94,116 +115,127 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
 
 ### 整体架构图
 
+```mermaid
+graph TB
+    subgraph "外部接口层"
+        TCP[TCP Server<br/>多线程并发<br/>Port 8888]
+        MQTT[MQTT Client<br/>异步消息<br/>QoS 2]
+        SFTP[SFTP Client<br/>文件上传]
+    end
+    
+    subgraph "命令路由层"
+        Router[Command Router<br/>统一命令分发]
+        Router --> |GET_CONFIG| Config[配置管理]
+        Router --> |SAVE_CONFIG| Config
+        Router --> |GET_IMAGE| Camera_Handler[相机处理]
+        Router --> |MODEL_TEST| Detection_Handler[检测处理]
+        Router --> |CATCH| Detection_Handler
+        Router --> |GET_CALIBRAT_IMAGE| Calib_Handler[标定处理]
+        Router --> |COORDINATE_CALIBRATION| Calib_Handler
+    end
+    
+    subgraph "业务服务层"
+        Camera[SICK Camera<br/>图像采集]
+        Detector[AI Detector<br/>PC/RKNN]
+        Calibrator[Calibrator<br/>坐标标定]
+        Coordinator[Coordinate Processor<br/>坐标转换]
+        TargetSelector[Target Selector<br/>目标选择]
+        Visualizer[Visualizer<br/>结果可视化]
+    end
+    
+    subgraph "系统管理层（多线程）"
+        Monitor[System Monitor<br/>健康监控主线程]
+        Monitor --> |监控线程1| CameraMonitor[相机监控]
+        Monitor --> |监控线程2| DetectorMonitor[检测器监控]
+        Monitor --> |监控线程3| TCPMonitor[TCP监控]
+        Monitor --> |监控线程4| MQTTMonitor[MQTT监控]
+        Monitor --> |监控线程5| SFTPMonitor[SFTP监控]
+    end
+    
+    TCP --> Router
+    MQTT --> Router
+    Router --> Camera
+    Router --> Detector
+    Router --> Calibrator
+    Camera --> Coordinator
+    Detector --> TargetSelector
+    TargetSelector --> Visualizer
+    Calibrator --> Camera
+    Detection_Handler --> SFTP
+    
+    style TCP fill:#e1f5ff
+    style MQTT fill:#e1f5ff
+    style Monitor fill:#fff3e0
+    style Router fill:#f3e5f5
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        VisionCore EE                             │
-│                     Enterprise Edition                           │
-└─────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│                         外部接口层                               │
-├──────────────┬──────────────────────┬───────────────────────────┤
-│  TCP Server  │   MQTT Client        │   SFTP Client             │
-│  (Port 8888) │   (Commands/Status)  │   (Image Upload)          │
-└──────┬───────┴──────────┬───────────┴──────────┬────────────────┘
-       │                  │                      │
-       ▼                  ▼                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      命令路由层 (Command Router)                 │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │ GET_CONFIG | SAVE_CONFIG | GET_IMAGE | MODEL_TEST          │ │
-│  │ GET_CALIBRAT_IMAGE | COORDINATE_CALIBRATION | CATCH        │ │
-│  │ GET_SYSTEM_STATUS | RESTART | SFTP_TEST                    │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-       │                  │                      │
-       ▼                  ▼                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       业务服务层 (Services)                      │
-├──────────────┬──────────────┬────────────────┬─────────────────┤
-│   Camera     │  Detection   │  Calibration   │   System        │
-│  - SICK      │  - PC YOLO   │  - Black Block │  - Monitor      │
-│  - HIK ToF   │  - RKNN      │  - Calculator  │  - Log Manager  │
-│              │  - Coord     │                │  - Initializer  │
-└──────┬───────┴──────┬───────┴────────┬───────┴─────────┬────────┘
-       │              │                │                 │
-       ▼              ▼                ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    领域模型层 (Domain)                           │
-│  ┌──────────────────┐  ┌──────────────────┐                    │
-│  │   Enums          │  │   Models         │                    │
-│  │  - Commands      │  │  - MQTTResponse  │                    │
-│  │  - MessageType   │  │  - CalibData     │                    │
-│  │  - ErrorCode     │  │                  │                    │
-│  └──────────────────┘  └──────────────────┘                    │
-└─────────────────────────────────────────────────────────────────┘
-       │              │                │                 │
-       ▼              ▼                ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   基础设施层 (Infrastructure)                    │
-│  ┌──────────────────┐  ┌──────────────────┐                    │
-│  │   SICK SDK       │  │   HIK SDK        │                    │
-│  │  - Protocol      │  │  - ToF API       │                    │
-│  │  - Streaming     │  │                  │                    │
-│  └──────────────────┘  └──────────────────┘                    │
-└─────────────────────────────────────────────────────────────────┘
+---
+
+## 多线程架构
+
+### 线程模型
+
+系统采用**多线程并发架构**，提高响应速度和系统稳定性：
+
+```mermaid
+graph LR
+    subgraph "主线程"
+        Main[Main Thread<br/>系统启动与控制]
+    end
+    
+    subgraph "TCP 服务器线程组"
+        Accept[Accept Thread<br/>接受新连接]
+        Heartbeat[Heartbeat Thread<br/>连接心跳检测]
+        Client1[Client Thread 1<br/>处理客户端1]
+        Client2[Client Thread 2<br/>处理客户端2]
+        ClientN[Client Thread N<br/>处理客户端N]
+    end
+    
+    subgraph "MQTT 客户端线程"
+        MQTTThread[MQTT Thread<br/>消息接收与处理]
+    end
+    
+    subgraph "系统监控线程组"
+        MonitorMain[Monitor Main<br/>监控协调]
+        MonitorCamera[Camera Monitor<br/>相机健康检查]
+        MonitorDetector[Detector Monitor<br/>检测器健康检查]
+        MonitorTCP[TCP Monitor<br/>TCP服务器检查]
+        MonitorMQTT[MQTT Monitor<br/>MQTT客户端检查]
+        MonitorSFTP[SFTP Monitor<br/>SFTP客户端检查]
+    end
+    
+    Main --> Accept
+    Main --> Heartbeat
+    Main --> MQTTThread
+    Main --> MonitorMain
+    
+    Accept --> Client1
+    Accept --> Client2
+    Accept --> ClientN
+    
+    MonitorMain --> MonitorCamera
+    MonitorMain --> MonitorDetector
+    MonitorMain --> MonitorTCP
+    MonitorMain --> MonitorMQTT
+    MonitorMain --> MonitorSFTP
+    
+    style Main fill:#ffebee
+    style Accept fill:#e3f2fd
+    style Heartbeat fill:#e3f2fd
+    style MonitorMain fill:#fff3e0
 ```
 
-### 数据流图
+### 线程说明
 
-```
-工作流程: TCP catch 命令
-
-Client                TCP Server        Detection        Camera        Calibration
-  │                       │                 │               │               │
-  ├─ catch ─────────────► │                 │               │               │
-  │                       ├─ 防抖检查        │               │               │
-  │                       ├─ 并发控制        │               │               │
-  │                       │                 │               │               │
-  │                       ├─ get_frame ────────────────────► │               │
-  │                       │                 │               │               │
-  │                       │                 │ ◄─ 返回帧 ──── │               │
-  │                       │                 │               │               │
-  │                       ├─ detect ───────► │               │               │
-  │                       │                 │               │               │
-  │                       │ ◄─ 检测结果 ───── │               │               │
-  │                       │                 │               │               │
-  │                       ├─ 坐标转换 ────────────────────────────────────► │
-  │                       │                 │               │               │
-  │                       │ ◄─ 机器人坐标 ─────────────────────────────────── │
-  │                       │                 │               │               │
-  │ ◄─ "1,x,y,z,angle" ── │                 │               │               │
-  │                       │                 │               │               │
-
-
-工作流程: 坐标标定
-
-Client                MQTT              Calibration      Camera         SFTP
-  │                       │                 │               │               │
-  ├─ get_calibrat_image ─► │                 │               │               │
-  │                       ├─────────────────► │               │               │
-  │                       │                 ├─ get_frame ───► │               │
-  │                       │                 │               │               │
-  │                       │                 ├─ detect_blocks │               │
-  │                       │                 │               │               │
-  │                       │                 ├─ calc_world ──► │               │
-  │                       │                 │               │               │
-  │                       │                 ├─ upload_image ────────────────► │
-  │                       │                 │               │               │
-  │ ◄─ world_coords ────── │ ◄───────────── │               │               │
-  │                       │                 │               │               │
-  ├─ (用户示教机器人)      │                 │               │               │
-  │                       │                 │               │               │
-  ├─ coordinate_calibration (world + robot coords)           │               │
-  │                       │                 │               │               │
-  │                       ├─────────────────► │               │               │
-  │                       │                 ├─ fit_affine_xy │               │
-  │                       │                 ├─ fit_linear_z  │               │
-  │                       │                 ├─ save_matrix   │               │
-  │                       │                 │               │               │
-  │ ◄─ calibration_result │ ◄───────────── │               │               │
-  │    (matrix + RMSE)    │                 │               │               │
-```
+| 线程类型 | 数量 | 守护线程 | 功能描述 |
+|---------|------|---------|----------|
+| 主线程 | 1 | 否 | 系统启动、初始化、信号处理 |
+| TCP Accept线程 | 1 | 是 | 监听并接受新的TCP连接 |
+| TCP Heartbeat线程 | 1 | 是 | 定期检查客户端心跳，清理超时连接 |
+| TCP Client线程 | N | 是 | 每个TCP客户端独立线程，处理命令 |
+| MQTT线程 | 1 | 是 | 接收和处理MQTT消息 |
+| Monitor主线程 | 1 | 否 | 协调各组件监控 |
+| 组件监控线程 | 5 | 是 | 分别监控相机、检测器、TCP、MQTT、SFTP |
 
 ---
 
@@ -216,221 +248,166 @@ VisualCoreEnterpriseEdition/
 │   ├── main.py                            # 主程序入口
 │   └── bootstrap.py                       # 启动引导和依赖注入
 │
-├── domain/                                 # 领域模型层（业务核心）
-│   ├── enums/                             # 枚举定义
-│   │   ├── commands.py                    # 命令枚举（VisionCoreCommands）
-│   │   └── errors.py                      # 错误码枚举（TcpErrorCode）
-│   └── models/                            # 数据模型
-│       └── mqtt.py                        # MQTT响应模型（MQTTResponse）
+├── domain/                                 # 领域模型层
+│   ├── enums/                             
+│   │   └── commands.py                    # 命令枚举（VisionCoreCommands）
+│   └── models/                            
+│       └── mqtt.py                        # MQTT响应模型
 │
 ├── services/                               # 业务服务层
 │   ├── camera/                            # 相机服务
 │   │   ├── sick_camera.py                 # SICK 3D相机实现
-│   │   └── hik_tof.py                     # 海康ToF相机实现
+│   │   └── hik_tof.py                     # HIK ToF相机（待集成）
 │   │
 │   ├── detection/                         # 检测服务
-│   │   ├── base.py                        # 检测器接口（抽象基类）
-│   │   ├── factory.py                     # 检测器工厂（PC/RKNN选择）
+│   │   ├── base.py                        # 检测器接口
+│   │   ├── factory.py                     # 检测器工厂
 │   │   ├── pc_ultralytics.py             # PC端Ultralytics检测器
 │   │   ├── rknn_backend.py               # RKNN推理后端
-│   │   └── coordinate_processor.py        # 坐标处理器（像素→世界→机器人）
+│   │   ├── coordinate_processor.py        # 坐标处理器
+│   │   ├── target_selector.py             # 目标选择器
+│   │   ├── visualizer.py                  # 可视化工具
+│   │   └── roi_processor.py               # ROI处理器
 │   │
-│   ├── calibration/                       # 标定服务 ⭐新增
+│   ├── calibration/                       # 标定服务
 │   │   ├── black_block_detector.py        # 黑块检测器
-│   │   └── calibrator.py                  # 标定计算器（XY仿射+Z线性）
+│   │   └── calibrator.py                  # 标定计算器
 │   │
 │   ├── comm/                              # 通信服务
-│   │   ├── tcp_server.py                  # TCP服务器
+│   │   ├── tcp_server.py                  # TCP服务器（多线程）
 │   │   ├── mqtt_client.py                 # MQTT客户端
-│   │   ├── comm_manager.py                # 通信管理器（统一接口）
+│   │   ├── comm_manager.py                # 通信管理器
 │   │   ├── command_router.py              # 命令路由器
 │   │   └── handlers/                      # 命令处理器
-│   │       ├── calibration.py             # 标定命令处理 ⭐新增
-│   │       ├── camera.py                  # 相机命令处理
-│   │       ├── config.py                  # 配置命令处理
-│   │       ├── detection.py               # 检测命令处理
-│   │       ├── sftp.py                    # SFTP命令处理
-│   │       ├── system.py                  # 系统命令处理
-│   │       ├── tcp.py                     # TCP命令处理（catch）
-│   │       └── context.py                 # 命令上下文（依赖注入）
+│   │       ├── calibration.py             
+│   │       ├── camera.py                  
+│   │       ├── config.py                  
+│   │       ├── detection.py               
+│   │       └── context.py                 
 │   │
 │   ├── sftp/                              # SFTP服务
-│   │   └── sftp_client.py                 # SFTP客户端（文件上传）
+│   │   └── sftp_client.py                 
+│   │
+│   ├── shared/                            # 共享工具
+│   │   ├── image_utils.py                 # 图像处理工具
+│   │   └── sftp_helper.py                 # SFTP辅助工具
 │   │
 │   └── system/                            # 系统服务
 │       ├── initializer.py                 # 系统初始化器
-│       ├── monitor.py                     # 系统监控器（健康检查）
+│       ├── monitor.py                     # 系统监控器（多线程）
 │       └── log_manager.py                 # 日志管理器
 │
 ├── infrastructure/                         # 基础设施层
 │   ├── sick/                              # SICK SDK封装
-│   │   └── common/                        # SICK通用模块
-│   │       ├── Control.py                 # 相机控制
-│   │       ├── Stream.py                  # 数据流处理
-│   │       ├── Protocol/                  # 通信协议
-│   │       └── Streaming/                 # 流数据解析
-│   └── hik/                               # 海康SDK封装
+│   └── Mv3dRgbdImport/                    # HIK ToF SDK封装
 │
 ├── configs/                                # 配置文件
 │   ├── config.yaml                        # 主配置文件
-│   └── transformation_matrix.json         # 坐标变换矩阵
-│
-├── docs/                                   # 文档
-│   ├── README.md                          # 文档索引
-│   ├── architecture.md                    # 架构设计文档
-│   ├── configuration.md                   # 配置说明文档
-│   ├── deployment.md                      # 部署指南
-│   ├── development.md                     # 开发指南
-│   └── calibration_workflow.md            # 标定工作流程 ⭐新增
-│
-├── scripts/                                # 运维脚本
-│   ├── install.sh                         # 安装脚本（Linux）
-│   └── visioncore.service                # systemd服务配置
-│
-├── tests/                                  # 测试
-│   └── README.md                          # 测试说明
+│   ├── transformation_matrix.json         # 坐标变换矩阵
+│   └── warmup_image.jpg                   # 预热图像
 │
 ├── models/                                 # AI模型文件
-│   ├── *.pt                               # PyTorch模型
-│   └── *.rknn                             # RKNN模型
-│
 ├── logs/                                   # 日志文件
+├── debug/                                  # 调试输出
+├── tests/                                  # 测试脚本
+├── scripts/                                # 运维脚本
 │
-├── .gitignore                             # Git忽略配置
-├── LICENSE                                # 开源许可证
-└── README.md                              # 本文档
+├── .gitignore                             
+├── LICENSE                                
+└── README.md                              
 ```
 
 ---
 
 ## 核心模块
 
-### 1. 相机模块 (`services/camera/`)
+### 1. TCP 服务器（多线程）
 
-#### SICK 3D 相机
+```python
+from services.comm.tcp_server import TcpServer
+
+# TCP服务器自动创建多个线程：
+# - Accept线程：接受新连接
+# - Heartbeat线程：心跳检测
+# - Client线程：每个客户端一个独立线程
+
+server = TcpServer(config, logger)
+server.set_message_callback(handle_message)
+server.start()
+```
+
+**线程安全特性**:
+- 线程安全的客户端字典管理
+- RLock 锁保护共享资源
+- 优雅的线程退出机制
+
+### 2. 系统监控器（多线程）
+
+```python
+from services.system.monitor import SystemMonitor
+
+monitor = SystemMonitor(logger, check_interval=30)
+
+# 注册组件监控（每个组件独立监控线程）
+monitor.register("camera", 
+                health_check=lambda: camera.healthy,
+                restart_callback=restart_camera,
+                is_critical=True)
+
+monitor.start()  # 启动所有监控线程
+```
+
+**监控机制**:
+- 每个组件独立监控线程
+- 定期健康检查（默认30秒）
+- 失败计数与自动重启
+- 关键/非关键组件分级处理
+
+### 3. 相机模块
+
 ```python
 from services.camera.sick_camera import SickCamera
 
-camera = SickCamera(ip="192.168.2.99", port=2122)
+camera = SickCamera(
+    ip="192.168.2.99", 
+    port=2122, 
+    use_single_step=True,
+    logger=logger,
+    login_attempts=[
+        {"level": "service", "password": "123456"},
+        {"level": "client", "password": "CLIENT"}
+    ]
+)
 camera.connect()
-frame = camera.get_frame(convert_to_mm=True)
-# frame包含: depthmap, intensity, cameraParams
+
+# 获取所有数据
+frame = camera.get_frame(depth=True, intensity=True, camera_params=True)
 ```
 
-**功能**:
-- 深度图像采集
-- 强度图像采集
-- 相机参数获取
-- 自动重连机制
+### 4. 检测模块
 
-#### HIK ToF 相机
-```python
-from services.camera.hik_tof import HikToFCamera
-
-camera = HikToFCamera()
-camera.connect()
-frame = camera.get_frame()
-```
-
-### 2. 检测模块 (`services/detection/`)
-
-#### 工厂模式自动选择
 ```python
 from services.detection.factory import create_detector
 
-# 自动选择最优后端（PC/RKNN）
+# 自动选择最优后端
 detector = create_detector(config)
 results = detector.detect(image)
 ```
 
-**支持的后端**:
-- **PC**: Ultralytics YOLO (CPU/GPU)
-- **RKNN**: 嵌入式加速（RK3588）
-- **Auto**: 自动检测并选择
+### 5. 标定模块
 
-### 3. 标定模块 (`services/calibration/`) ⭐
-
-#### 黑块检测
 ```python
-from services.calibration import detect_black_blocks
+from services.calibration import detect_black_blocks, calibrate_from_points
 
+# 黑块检测
 blocks = detect_black_blocks(image, max_blocks=12, rows=3, cols=4)
-# 返回: List[BlackBlock] - 按网格顺序排列
-```
 
-**算法特性**:
-- 多种二值化策略（Otsu、自适应、CLAHE）
-- 严格的质量评分（形状、对比度、实心度）
-- PCA网格排序
-- 外点剔除
-
-#### 坐标标定
-```python
-from services.calibration import calibrate_from_points
-
+# 坐标标定
 result = calibrate_from_points(
     world_points=[(xw1, yw1, zw1), ...],
     robot_points=[(xr1, yr1, zr1), ...],
     output_path="configs/transformation_matrix.json"
 )
-# 返回: matrix, metadata (RMSE, 质量评级)
-```
-
-**标定方法**:
-- XY平面: 2D仿射变换（6参数）
-- Z轴: 线性映射（2参数: alpha*zw + beta）
-- 合成: 4x4齐次变换矩阵
-
-### 4. 通信模块 (`services/comm/`)
-
-#### 命令路由器
-```python
-from services.comm.command_router import CommandRouter
-
-router = CommandRouter()
-router.register_default()  # 注册所有默认命令
-router.bind(camera=cam, detector=det, config=cfg)  # 注入依赖
-
-response = router.route(request)  # 路由并执行命令
-```
-
-#### TCP 服务器
-```python
-from services.comm.tcp_server import TcpServer
-
-server = TcpServer(host="0.0.0.0", port=8888)
-server.start()
-# 自动处理 "catch" 命令
-```
-
-#### MQTT 客户端
-```python
-from services.comm.mqtt_client import MqttClient
-
-mqtt = MqttClient(broker="192.168.2.126", port=1883)
-mqtt.connect()
-mqtt.subscribe("sickvision/system/command", callback)
-```
-
-### 5. 系统模块 (`services/system/`)
-
-#### 系统初始化器
-```python
-from services.system.initializer import SystemInitializer
-
-init = SystemInitializer(config_path="configs/config.yaml")
-components = init.initialize_all()
-# 返回: camera, detector, tcp_server, mqtt_client, sftp, monitor
-```
-
-#### 系统监控器
-```python
-from services.system.monitor import SystemMonitor
-
-monitor = SystemMonitor(logger)
-monitor.register_component("camera", camera, restart_callback)
-monitor.start_monitoring()
-# 自动健康检查和故障重启
 ```
 
 ---
@@ -442,26 +419,24 @@ monitor.start_monitoring()
 | 命令 | 功能 | 参数 | 返回 |
 |------|------|------|------|
 | `get_config` | 获取系统配置 | - | 完整配置和模型列表 |
-| `save_config` | 保存系统配置 | config对象 | 成功/失败 |
+| `save_config` | 保存系统配置 | config对象 | 成功/失败（带备份） |
 | `get_image` | 获取相机图像 | - | 图像+SFTP上传信息 |
-| `get_calibrat_image` | 获取标定图像 ⭐ | - | 12个黑块的世界坐标 |
-| `coordinate_calibration` | 执行坐标标定 ⭐ | world_points, robot_points | 变换矩阵+RMSE |
-| `model_test` | 测试AI模型 | - | 检测数量+推理时间 |
-| `sftp_test` | 测试SFTP连接 | - | 连接状态 |
-| `get_system_status` | 获取系统状态 | - | 各组件健康状态 |
-| `restart` | 重启系统 | - | 确认 |
+| `model_test` | 测试AI模型 | - | 检测数量+推理时间+可视化图像 |
+| `get_calibrat_image` | 获取标定图像 | - | 12个黑块的世界坐标+可视化图像 |
+| `coordinate_calibration` | 执行坐标标定 | world_points, robot_points | 变换矩阵+RMSE+质量评级 |
+| `catch` | 执行单次检测 | - | 检测结果+机器人坐标 |
 
 ### TCP 命令（实时检测）
 
 | 命令 | 功能 | 返回格式 | 示例 |
 |------|------|----------|------|
-| `catch` | 执行单次检测 | `count,x,y,z,angle` | `1,123.456,78.901,-45.123,90.000` |
+| `catch` | 执行单次检测 | `p1_flag,p2_flag,x,y,z` | `1,0,123.456,78.901,-45.123` |
 
 **错误码**:
 - `0,0,0,0,0`: 未检测到目标
 - `E1,0,0,0,0`: 相机/检测器未就绪
-- `E2,0,0,0,0`: 检测频率过高
-- `E3,0,0,0,0`: 正在处理中
+- `E2,0,0,0,0`: 检测频率过高（防抖机制）
+- `E3,0,0,0,0`: 正在处理中（并发控制）
 
 ---
 
@@ -486,17 +461,8 @@ cd VisualCoreEnterpriseEdition
 # 安装Python依赖
 pip install -r requirements.txt
 
-# 安装OpenCV（如未安装）
-pip install opencv-python opencv-contrib-python
-
-# 安装Ultralytics（PC端检测）
-pip install ultralytics
-
-# 安装MQTT客户端
-pip install paho-mqtt
-
-# 安装其他依赖
-pip install numpy pyyaml paramiko
+# 主要依赖
+pip install opencv-python ultralytics paho-mqtt numpy pyyaml paramiko
 ```
 
 ### 配置文件
@@ -504,32 +470,103 @@ pip install numpy pyyaml paramiko
 编辑 `configs/config.yaml`:
 
 ```yaml
+# 日志配置
+logging:
+  enable: true
+  level: INFO
+  console:
+    enable: true
+  file:
+    enable: true
+    path: logs
+    backup_count: 30
+
+# 监控配置
+board_mode:
+  retry_delay: 5
+  debug_warmup: false
+  monitoring:
+    check_interval: 30      # 健康检查间隔（秒）
+    failure_threshold: 1    # 失败次数阈值
+
 # 相机配置
 camera:
   enable: true
   connection:
-    ip: 192.168.2.99        # 修改为你的相机IP
+    ip: 192.168.2.99
     port: 2122
+    timeout: 0
+  mode:
+    useSingleStep: true
+  auth:
+    loginAttempts:
+      - level: service
+        password: '123456'
 
 # 检测模型
 model:
-  backend: auto             # pc | rknn | auto
-  path: models/your_model.pt
+  backend: auto            # pc | rknn | auto
+  model_name: seg-seasoning2.pt
+  path: models/seg-seasoning2.pt
   conf_threshold: 0.5
   nms_threshold: 0.45
 
-# TCP服务器
+# TCP服务器（多线程）
 DetectionServer:
   enable: true
-  host: 0.0.0.0
+  host: 192.168.2.126
   port: 8888
+  max_connections: 15      # 最大并发连接数
+  buffer_size: 4096
+  connection_timeout: 300
+  heartbeat_interval: 30   # 心跳检测间隔
 
-# MQTT
+# MQTT配置
 mqtt:
   enable: true
   connection:
     broker_host: 192.168.2.126
     broker_port: 1883
+    client_id: visioncorepro
+    keepalive: 60
+  qos:
+    subscribe: 2
+  topics:
+    subscribe:
+      system_command: visual/system/command
+    publish:
+      message: visual/system/result
+
+# ROI配置（多ROI优先级）
+roi:
+  enable: true
+  minArea: 2500
+  regions:
+    - name: main_work_area
+      shape: rectangle
+      width: 256
+      height: 80
+      offsetx: 0
+      offsety: 60
+      priority: 1          # 优先级最高
+    - name: backup_area
+      shape: rectangle
+      width: 256
+      height: 80
+      offsetx: 0
+      offsety: 146
+      priority: 2          # 优先级次之
+
+# SFTP配置
+sftp:
+  enable: true
+  host: 192.168.2.126
+  port: 22
+  username: qt
+  password: '123456'
+  remote_path: /
+  prefix: D://Camera
+  connection_timeout: 15
 ```
 
 ### 运行系统
@@ -538,103 +575,156 @@ mqtt:
 # 开发模式
 python -m app.main
 
-# 或直接运行
-python app/main.py
-```
-
-### 测试连接
-
-#### 测试TCP（使用telnet或nc）
-```bash
-# Windows
-telnet 192.168.2.126 8888
-catch
-
-# Linux
-echo "catch" | nc 192.168.2.126 8888
-```
-
-#### 测试MQTT（使用mosquitto）
-```bash
-# 订阅响应
-mosquitto_sub -h 192.168.2.126 -t PI/robot/message
-
-# 发送命令
-mosquitto_pub -h 192.168.2.126 -t sickvision/system/command \
-  -m '{"command":"get_system_status"}'
+# 系统将显示启动日志
+# VisionCorePro starting...
+# ✓ TCP服务器启动成功 | 192.168.2.126:8888
+# ✓ 相机连接成功 | 192.168.2.99:2122
+# ✓ 检测器加载成功 | 后端: auto
+# ✓ MQTT连接成功 | 192.168.2.126
+# ✓ SFTP连接成功 | 192.168.2.126
+# ✓ 服务已启动，监控器正在运行
 ```
 
 ---
 
-## 配置说明
+## 工作流程
 
-### 主配置文件结构
+### TCP catch 命令流程
 
-```yaml
-# configs/config.yaml
-
-logging:                    # 日志配置
-  enable: true
-  level: INFO              # DEBUG | INFO | WARNING | ERROR
-  console:
-    enable: true
-  file:
-    enable: true
-    path: logs
-    backup_count: 30
-
-camera:                     # 相机配置
-  enable: true
-  connection:
-    ip: 192.168.2.99
-    port: 2122
-    timeout: 0
-  mode:
-    useSingleStep: true    # 单步模式
-
-model:                      # AI模型配置
-  backend: auto            # pc | rknn | auto
-  path: models/xxx.pt
-  conf_threshold: 0.5      # 置信度阈值
-  nms_threshold: 0.45      # NMS阈值
-
-DetectionServer:            # TCP服务器
-  enable: true
-  host: 0.0.0.0
-  port: 8888
-  max_connections: 15
-  buffer_size: 4096
-  connection_timeout: 300
-
-mqtt:                       # MQTT通信
-  enable: true
-  connection:
-    broker_host: 192.168.2.126
-    broker_port: 1883
-    client_id: visioncorepro
-  topics:
-    subscribe:
-      system_command: sickvision/system/command
-    publish:
-      message: PI/robot/message
-
-roi:                        # ROI区域
-  enable: true
-  width: 200               # ROI宽度（像素）
-  height: 100              # ROI高度（像素）
-  offsetx: 300             # X偏移
-  offsety: 200             # Y偏移
-  minArea: 2500            # 最小面积阈值（像素²）
-
-sftp:                       # SFTP文件传输
-  enable: true
-  host: 192.168.2.126
-  port: 22
-  username: qt
-  password: '123456'
-  remote_path: /
-  connection_timeout: 15
+```mermaid
+sequenceDiagram
+    participant Client
+    participant TCPThread as TCP Client Thread
+    participant Router as Command Router
+    participant Camera
+    participant Detector
+    participant Coordinator as Coordinate Processor
+    
+    Client->>TCPThread: catch
+    TCPThread->>TCPThread: 防抖检查
+    TCPThread->>TCPThread: 并发控制
+    TCPThread->>Router: 路由命令
+    Router->>Camera: get_frame(depth=True)
+    Camera-->>Router: 深度图+强度图+参数
+    Router->>Detector: detect(intensity_image)
+    Detector-->>Router: 检测结果列表
+    Router->>Router: ROI过滤+目标选择
+    Router->>Coordinator: 计算3D坐标
+    Coordinator-->>Router: 世界坐标
+    Router->>Router: 坐标转换→机器人坐标
+    Router-->>TCPThread: p1_flag,p2_flag,x,y,z
+    TCPThread-->>Client: 返回结果
 ```
+
+### 坐标标定工作流程
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant MQTT
+    participant Router
+    participant Camera
+    participant Calibrator
+    participant SFTP
+    
+    Client->>MQTT: get_calibrat_image
+    MQTT->>Router: 路由命令
+    Router->>Camera: get_frame(depth=True)
+    Camera-->>Router: 深度图+强度图+参数
+    Router->>Calibrator: detect_black_blocks(image)
+    Calibrator-->>Router: 12个黑块信息
+    Router->>Calibrator: 计算世界坐标
+    Calibrator-->>Router: 世界坐标列表
+    Router->>SFTP: 上传标注图像
+    Router-->>Client: world_coords
+    
+    Note over Client: 用户使用机器人示教器<br/>移动到各点记录坐标
+    
+    Client->>MQTT: coordinate_calibration<br/>(world+robot coords)
+    MQTT->>Router: 路由命令
+    Router->>Calibrator: fit_affine_xy
+    Router->>Calibrator: fit_linear_z
+    Router->>Calibrator: compose_matrix_4x4
+    Calibrator-->>Router: 变换矩阵+RMSE
+    Router->>Router: save_matrix
+    Router-->>Client: 标定结果+精度评级
+```
+
+### 多线程监控流程
+
+```mermaid
+graph TD
+    Start[系统启动] --> InitComponents[初始化所有组件]
+    InitComponents --> CreateMonitor[创建SystemMonitor]
+    CreateMonitor --> RegisterComponents[注册5个组件监控]
+    
+    RegisterComponents --> CameraThread[相机监控线程]
+    RegisterComponents --> DetectorThread[检测器监控线程]
+    RegisterComponents --> TCPThread[TCP监控线程]
+    RegisterComponents --> MQTTThread[MQTT监控线程]
+    RegisterComponents --> SFTPThread[SFTP监控线程]
+    
+    CameraThread --> CameraCheck{健康检查}
+    CameraCheck -->|正常| CameraWait[等待30秒]
+    CameraCheck -->|异常| CameraRestart[重启相机]
+    CameraWait --> CameraCheck
+    CameraRestart --> CameraCheck
+    
+    DetectorThread --> DetectorCheck{健康检查}
+    DetectorCheck -->|正常| DetectorWait[等待30秒]
+    DetectorCheck -->|异常| DetectorRestart[重启检测器]
+    DetectorWait --> DetectorCheck
+    DetectorRestart --> DetectorCheck
+    
+    TCPThread --> TCPCheck{健康检查}
+    TCPCheck -->|正常| TCPWait[等待30秒]
+    TCPCheck -->|异常| TCPRestart[重启TCP服务器]
+    TCPWait --> TCPCheck
+    TCPRestart --> TCPCheck
+    
+    MQTTThread --> MQTTCheck{健康检查}
+    MQTTCheck -->|正常| MQTTWait[等待30秒]
+    MQTTCheck -->|异常| MQTTRestart[重启MQTT客户端<br/>静默重试]
+    MQTTWait --> MQTTCheck
+    MQTTRestart --> MQTTCheck
+    
+    SFTPThread --> SFTPCheck{健康检查}
+    SFTPCheck -->|正常| SFTPWait[等待30秒]
+    SFTPCheck -->|异常| SFTPRestart[重启SFTP客户端<br/>静默重试]
+    SFTPWait --> SFTPCheck
+    SFTPRestart --> SFTPCheck
+    
+    style Start fill:#ffebee
+    style CreateMonitor fill:#fff3e0
+    style CameraThread fill:#e8f5e9
+    style DetectorThread fill:#e8f5e9
+    style TCPThread fill:#e3f2fd
+    style MQTTThread fill:#e3f2fd
+    style SFTPThread fill:#f3e5f5
+```
+
+---
+
+## 性能指标
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| TCP响应延迟 | < 200ms | 单次检测平均响应时间 |
+| TCP并发连接 | 15个 | 最大同时客户端数 |
+| 检测速度（PC） | 30-50 FPS | GPU加速（NVIDIA RTX系列） |
+| 检测速度（RKNN） | 15-25 FPS | RK3588 NPU加速 |
+| 相机取图速度 | 100-150ms | SICK 3D相机单帧 |
+| 内存占用 | < 500MB | 正常运行时 |
+| 启动时间 | 5-10秒 | 包含预热的完整启动 |
+| 监控线程数 | 5个 | 独立组件监控线程 |
+| 健康检查间隔 | 30秒 | 可配置 |
+| 标定精度 | XY: 2-3mm, Z: 3-5mm | 12点标定典型精度 |
+
+**测试环境**:
+- CPU: Intel Core i7-10700
+- GPU: NVIDIA RTX 3060
+- 内存: 16GB DDR4
+- 操作系统: Windows 10 / Ubuntu 20.04
 
 ---
 
@@ -642,31 +732,21 @@ sftp:                       # SFTP文件传输
 
 ### Linux 系统服务部署
 
-#### 1. 安装到系统目录
 ```bash
+# 1. 安装到系统目录
 sudo cp -r . /opt/VisionCoreEE
 cd /opt/VisionCoreEE
 sudo pip3 install -r requirements.txt
-```
 
-#### 2. 配置 systemd 服务
-```bash
+# 2. 配置 systemd 服务
 sudo cp scripts/visioncore.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable visioncore
 sudo systemctl start visioncore
-```
 
-#### 3. 查看状态和日志
-```bash
-# 查看服务状态
+# 3. 查看状态和日志
 sudo systemctl status visioncore
-
-# 查看实时日志
 sudo journalctl -u visioncore -f
-
-# 重启服务
-sudo systemctl restart visioncore
 ```
 
 ### Windows 服务部署
@@ -675,207 +755,97 @@ sudo systemctl restart visioncore
 
 ```cmd
 # 下载NSSM: https://nssm.cc/download
-
-# 安装服务
 nssm install VisionCoreEE "C:\Python38\python.exe" "C:\VisionCoreEE\app\main.py"
-
-# 启动服务
 nssm start VisionCoreEE
-
-# 查看状态
-nssm status VisionCoreEE
-```
-
-### Docker 部署（可选）
-
-```dockerfile
-FROM python:3.8-slim
-
-WORKDIR /app
-COPY . /app
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-CMD ["python", "-m", "app.main"]
-```
-
-```bash
-# 构建镜像
-docker build -t visioncore-ee .
-
-# 运行容器
-docker run -d --name visioncore \
-  -p 8888:8888 \
-  -v ./configs:/app/configs \
-  -v ./logs:/app/logs \
-  visioncore-ee
 ```
 
 ---
 
 ## 开发指南
 
-### 添加新的相机支持
-
-1. 在 `services/camera/` 创建新文件 `your_camera.py`
-2. 实现相机接口（参考 `sick_camera.py`）
-3. 在配置中添加相机选项
-4. 在初始化器中注册
-
-### 添加新的检测后端
-
-1. 在 `services/detection/` 创建新文件
-2. 继承 `DetectorBase` 基类
-3. 实现 `detect()` 方法
-4. 在工厂 (`factory.py`) 中注册
-
 ### 添加新的MQTT命令
 
-1. 在 `domain/enums/commands.py` 添加命令枚举
-2. 在 `services/comm/handlers/` 创建处理器
-3. 在 `command_router.py` 注册命令
-
 ```python
-# 1. 添加枚举
+# 1. 添加枚举 (domain/enums/commands.py)
 class VisionCoreCommands(Enum):
     NEW_COMMAND = "new_command"
 
-# 2. 创建处理器
-def handle_new_command(req: MQTTResponse, ctx: CommandContext):
-    # 实现逻辑
-    return MQTTResponse(...)
+# 2. 创建处理器 (services/comm/handlers/your_handler.py)
+def handle_new_command(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
+    return MQTTResponse(
+        command=VisionCoreCommands.NEW_COMMAND.value,
+        component="your_component",
+        messageType=MessageType.SUCCESS,
+        message="success",
+        data={"result": "ok"}
+    )
 
-# 3. 注册命令
-router.register(VisionCoreCommands.NEW_COMMAND.value, 
-                lambda req: handle_new_command(req, self._ctx))
+# 3. 注册命令 (services/comm/command_router.py)
+def register_default(self):
+    self.register(VisionCoreCommands.NEW_COMMAND.value, 
+                  lambda req: handle_new_command(req, self._ctx))
 ```
 
 ### 代码规范
 
-- **命名**: 
-  - 类名: PascalCase (`SickCamera`)
-  - 函数/变量: snake_case (`get_frame`)
-  - 常量: UPPER_CASE (`MAX_RETRY`)
-- **注释**: 使用中文注释，函数需docstring
-- **类型提示**: 尽量添加类型提示
-- **错误处理**: 统一使用 try-except，记录日志
-
----
-
-## 文档
-
-### 详细文档
-
-- 📐 [**标定工作流程**](docs/calibration_workflow.md) - 坐标标定完整指南
-- 🏗️ [架构设计](docs/architecture.md) - 系统架构详解
-- ⚙️ [配置说明](docs/configuration.md) - 配置项详细说明
-- 🚀 [部署指南](docs/deployment.md) - 生产环境部署
-- 💻 [开发指南](docs/development.md) - 开发规范和最佳实践
-
-### API 文档
-
-各模块的详细API文档请查看源码中的docstring。
-
----
-
-## 更新日志
-
-### v1.0.0 (2025-11-10)
-
-#### ✅ 已完成功能
-
-- ✅ **核心架构重构**: DDD分层架构，清晰的模块划分
-- ✅ **相机支持**: SICK 3D相机、HIK ToF相机
-- ✅ **检测引擎**: Ultralytics YOLO (PC) + RKNN (嵌入式)
-- ✅ **双通信协议**: TCP服务器 + MQTT客户端
-- ✅ **命令路由**: 统一的命令分发机制
-- ✅ **坐标标定**: 黑块检测 + 两步工作流 ⭐
-- ✅ **系统监控**: 健康检查 + 自动重启
-- ✅ **日志系统**: 分级日志 + 按日轮转
-- ✅ **SFTP传输**: 文件上传功能
-
-#### 🚧 计划功能
-
-- ⏳ 单元测试覆盖
-- ⏳ 配置校验（JSON Schema）
-- ⏳ Web管理界面
-- ⏳ 数据库集成
-- ⏳ Docker镜像
-
----
-
-## 性能指标
-
-| 指标 | 数值 | 说明 |
-|------|------|------|
-| TCP响应延迟 | < 200ms | 单次检测平均响应 |
-| 检测速度 | 30-50 FPS | PC端（GPU加速） |
-| 相机帧率 | 10-30 FPS | 取决于相机型号 |
-| 并发连接 | 15个 | TCP最大并发数 |
-| 内存占用 | < 500MB | 正常运行时 |
-| 标定精度 | XY: 2-3mm, Z: 3-5mm | 典型值 |
+- **命名规范**: 
+  - 类名: `PascalCase`
+  - 函数/变量: `snake_case`
+  - 常量: `UPPER_CASE`
+  - 私有方法: `_method_name`
+- **线程安全**: 使用锁保护共享资源
+- **异常处理**: 统一使用 `try-except`
+- **日志记录**: 分级记录（DEBUG/INFO/WARNING/ERROR）
 
 ---
 
 ## 故障排除
 
-### 常见问题
+### Q1: 相机连接失败
 
-#### Q1: 相机连接失败
-
-**检查**:
 ```bash
 # 测试网络连通性
 ping 192.168.2.99
-
-# 测试端口
 telnet 192.168.2.99 2122
 ```
 
-**解决**: 检查IP配置、网络连接、相机电源
+### Q2: TCP服务器无法启动
 
-#### Q2: 检测器加载失败
+- 检查端口是否被占用
+- 检查防火墙设置
+- 查看日志文件详细错误
 
-**检查**:
-- 模型文件是否存在
-- Python依赖是否完整
-- 后端选择是否正确
+### Q3: 监控线程异常退出
 
-#### Q3: MQTT连接失败
-
-**检查**:
-```bash
-# 测试MQTT代理
-mosquitto_pub -h 192.168.2.126 -t test -m "hello"
-```
-
-**解决**: 检查代理地址、端口、认证信息
+- 检查日志文件中的错误信息
+- 确认各组件配置正确
+- 检查系统资源是否充足
 
 ---
 
-## 贡献指南
+## 更新日志
 
-欢迎贡献！请遵循以下步骤：
+### v1.1.0 (2025-11-14)
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+#### 🎉 新增功能
+
+- ✅ **多线程架构**: 全面重构为多线程并发处理
+- ✅ **TCP多客户端**: 支持多个客户端同时连接，每个客户端独立线程
+- ✅ **独立监控线程**: 每个组件独立监控线程，互不干扰
+- ✅ **心跳检测**: TCP连接心跳检测，自动清理超时连接
+- ✅ **代码清理**: 删除16个未使用方法，优化代码结构
+
+#### 🔄 改进
+
+- 📈 **性能提升**: 多线程并发，TCP响应更快
+- 🛡️ **稳定性**: 独立监控线程，组件故障隔离
+- 🔧 **可维护性**: 代码更简洁，职责更清晰
 
 ---
 
 ## 许可证
 
 本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
----
-
-## 技术支持
-
-- 📧 Email: support@visioncore.com
-- 📝 Issues: [GitHub Issues](https://github.com/your-org/VisionCoreEE/issues)
-- 📖 Wiki: [项目Wiki](https://github.com/your-org/VisionCoreEE/wiki)
 
 ---
 
@@ -891,6 +861,11 @@ mosquitto_pub -h 192.168.2.126 -t test -m "hello"
 <div align="center">
 
 **Built with ❤️ for Industrial Automation**
+
+**流程图预览插件推荐：**
+- VSCode: 安装 "Markdown Preview Mermaid Support"
+- GitHub: 原生支持，无需插件
+- 在线预览: https://mermaid.live/
 
 [⬆ 返回顶部](#visioncore-enterprise-edition)
 

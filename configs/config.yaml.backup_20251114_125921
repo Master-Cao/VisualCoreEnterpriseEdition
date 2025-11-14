@@ -9,6 +9,7 @@ logging:
     backup_count: 30
 board_mode:
   retry_delay: 5
+  debug_warmup: false
   monitoring:
     check_interval: 30
     failure_threshold: 1
@@ -28,7 +29,9 @@ camera:
       password: CLIENT
 model:
   backend: auto
-  path: models/seasoning_seg_test.pt
+  model_name: seasoning_seg_2.pt
+  model_file: models
+  path: models/seasoning_seg_2.pt
   conf_threshold: 0.5
   nms_threshold: 0.45
 DetectionServer:
@@ -50,20 +53,36 @@ mqtt:
     subscribe: 2
   topics:
     subscribe:
-      system_command: sickvision/system/command
+      system_command: visual/system/command
     publish:
-      message: PI/robot/message
+      message: visual/system/result
 roi:
   enable: true
-  width: 0
-  height: 0
-  offsetx: 0
-  offsety: 0
+  minArea: 2800
+  regions:
+  - name: main_work_area
+    enable: true
+    shape: rectangle
+    width: 256
+    height: 120
+    offsetx: 0
+    offsety: 0
+    priority: 1
+  - name: backup_area
+    enable: false
+    shape: rectangle
+    width: 256
+    height: 120
+    offsetx: 0
+    offsety: 136
+    priority: 2
+  priority: 0
 sftp:
-  enable: false
+  enable: true
   host: 192.168.2.126
   port: 22
   username: qt
   password: '123456'
   remote_path: /
+  prefix: D://Camera
   connection_timeout: 15

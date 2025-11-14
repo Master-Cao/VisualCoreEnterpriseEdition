@@ -15,6 +15,7 @@ from domain.enums.commands import VisionCoreCommands, MessageType
 from domain.models.mqtt import MQTTResponse
 from .context import CommandContext
 from services.calibration import detect_black_blocks, calibrate_from_points
+from services.shared import ImageUtils, SftpHelper
 
 
 def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
@@ -169,9 +170,9 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
         if ctx.sftp:
             try:
                 annotated_img = _annotate_blocks(img, blocks)
-                jpg = _encode_jpg(annotated_img)
+                jpg = ImageUtils.encode_jpg(annotated_img)
                 if jpg:
-                    upload_info = _sftp_upload_bytes(ctx.sftp, jpg, ctx.project_root, prefix="calib")
+                    upload_info = SftpHelper.upload_image_bytes(ctx.sftp, jpg, prefix="calib")
                     if upload_info and logger:
                         logger.info(f"标定图像已上传: {upload_info.get('filename')}")
             except Exception as upload_err:
@@ -478,52 +479,6 @@ def _annotate_blocks(image: np.ndarray, blocks) -> np.ndarray:
     
     return vis
 
-
-def _encode_jpg(img) -> Optional[bytes]:
-    """编码为JPEG"""
-    try:
-        if cv2 is None or img is None:
-            return None
-        ok, buf = cv2.imencode(".jpg", img)
-        if not ok:
-            return None
-        return bytes(buf)
-    except Exception:
-        return None
-
-
-def _sftp_upload_bytes(sftp, data: bytes, project_root: str, prefix: str = "calib") -> Optional[dict]:
-    """上传字节数据到SFTP"""
-    try:
-        from datetime import datetime
-        import os
-        
-        if not sftp or data is None:
-            return None
-        
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"{prefix}_{ts}.jpg"
-        remote_rel = os.path.join("images", filename).replace("\\", "/")
-        
-        ok = sftp.upload_bytes(data, remote_rel)
-        if ok:
-            remote_dir = os.path.dirname(remote_rel).replace("\\", "/")
-            if not remote_dir.startswith("/"):
-                remote_dir = f"/{remote_dir}" if remote_dir else "/"
-            if not remote_dir.endswith("/"):
-                remote_dir = f"{remote_dir}/"
-            remote_file = f"{remote_dir.rstrip('/')}/{filename}"
-            
-            return {
-                "filename": filename,
-                "remote_path": remote_dir,
-                "remote_rel_path": remote_rel,
-                "remote_file": remote_file,
-                "file_size": len(data),
-            }
-        return None
-    except Exception:
-        return None
 
 
 def _assess_quality(metadata: dict) -> str:

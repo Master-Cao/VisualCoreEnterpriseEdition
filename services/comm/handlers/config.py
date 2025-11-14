@@ -67,20 +67,48 @@ def handle_get_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
 
 def handle_save_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
     try:
-        cfg = None
         payload = req.data if isinstance(req.data, dict) else {}
+        
+        # 解析 payload
+        config_data = None
+        models_data = None
+        
+        if "config" in payload:
+            config_data = payload.get("config")
+        if "models" in payload:
+            models_data = payload.get("models")
+            
         # 兼容字符串形式的 data
-        if "config" in payload and isinstance(payload.get("config"), dict):
-            cfg = payload.get("config")
-        else:
+        if not config_data or not models_data:
             from json import loads
             raw = payload.get("data") if isinstance(payload.get("data"), str) else None
             if raw:
                 parsed = loads(raw)
-                if isinstance(parsed, dict) and isinstance(parsed.get("config"), dict):
-                    cfg = parsed.get("config")
-        if isinstance(cfg, dict):
-            merged = backup_and_persist_config(ctx.project_root, cfg)
+                if isinstance(parsed, dict):
+                    config_data = config_data or parsed.get("config")
+                    models_data = models_data or parsed.get("models")
+        
+        # 构建部分更新配置
+        partial_updates = {}
+        
+        # 1. 更新 ROI 配置
+        if isinstance(config_data, dict) and "roi" in config_data:
+            partial_updates["roi"] = config_data["roi"]
+        
+        # 2. 更新 model 配置
+        if isinstance(models_data, dict) and "selected" in models_data:
+            model_name = models_data["selected"]
+            if model_name:
+                model_file = ctx.config.get("model", {}).get("model_file", "models")
+                model_path = os.path.join(model_file, model_name).replace("\\", "/")
+                partial_updates["model"] = {
+                    "model_name": model_name,
+                    "path": model_path
+                }
+        
+        # 如果有更新内容，则保存
+        if partial_updates:
+            merged = backup_and_persist_config(ctx.project_root, partial_updates)
             ctx.config.clear()
             ctx.config.update(merged)
             return MQTTResponse(
@@ -90,11 +118,12 @@ def handle_save_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 message="saved",
                 data={},
             )
+        
         return MQTTResponse(
             command=VisionCoreCommands.SAVE_CONFIG.value,
             component="config_manager",
             messageType=MessageType.ERROR,
-            message="invalid_config",
+            message="no_valid_updates",
             data={},
         )
     except Exception as e:

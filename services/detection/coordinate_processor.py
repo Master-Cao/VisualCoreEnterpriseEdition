@@ -4,6 +4,7 @@
 """
 坐标处理模块
 负责从检测结果计算3D坐标和角度
+专注于坐标计算，不涉及ROI过滤等业务逻辑
 """
 
 from typing import List, Optional, Tuple, Dict, Any
@@ -14,7 +15,17 @@ import math
 class CoordinateProcessor:
     """
     坐标处理器
-    负责从检测结果、深度数据和相机参数计算3D坐标
+    专注于3D坐标计算：像素坐标 + 深度 → 相机坐标 → 机器人坐标
+    
+    职责：
+    - 3D坐标计算（畸变校正、深度投影）
+    - 坐标系变换（相机坐标→机器人坐标）
+    - 深度值稳健估计
+    
+    不包含：
+    - ROI过滤（由 RoiProcessor 负责）
+    - 目标选择（由 RoiProcessor 负责）
+    - 可视化（由 DetectionVisualizer 负责）
     """
     
     @staticmethod
@@ -135,148 +146,109 @@ class CoordinateProcessor:
             return 0.0
     
     @classmethod
-    def process_detection_to_coordinates(
+    def calculate_coordinate_for_detection(
         cls,
-        detection_boxes: List[Any],
+        detection: Any,
         depth_data: List[float],
         camera_params: Any,
-        roi_config: Optional[Dict],
         transformation_matrix: Optional[np.ndarray] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        处理检测结果，计算最佳目标的3D坐标
-        
-        选择策略：
-        1. 过滤ROI外的目标（如果启用ROI）
-        2. 按mask面积选择最大的目标
+        为单个检测框计算3D坐标
         
         Args:
-            detection_boxes: 检测框列表
-            depth_data: 深度数据
-            camera_params: 相机参数
-            roi_config: ROI配置
+            detection: 单个检测框对象
+            depth_data: 深度数据（一维数组）
+            camera_params: 相机参数对象
             transformation_matrix: 坐标变换矩阵（相机→机器人）
         
         Returns:
-            包含最佳目标信息的字典，无有效目标返回None
+            包含坐标信息的字典：
+            {
+                'center': [x, y],           # 像素中心点
+                'depth': float,             # 深度值(mm)
+                'camera_3d': [x, y, z],    # 相机坐标系3D坐标
+                'robot_3d': [x, y, z],     # 机器人坐标系3D坐标
+                'area': float,              # mask面积或bbox面积
+                'score': float,             # 置信度
+                'class_id': int             # 类别ID
+            }
+            计算失败返回None
         """
-        if not detection_boxes or not depth_data or not camera_params:
-            return None
-        
-        # 提取相机参数
-        width = camera_params.width
-        height = camera_params.height
-        cx, cy = camera_params.cx, camera_params.cy
-        fx, fy = camera_params.fx, camera_params.fy
-        k1, k2 = camera_params.k1, camera_params.k2
-        f2rc = camera_params.f2rc
-        
-        # 相机到世界坐标系的变换矩阵
-        m_c2w = None
-        if hasattr(camera_params, 'cam2worldMatrix') and len(camera_params.cam2worldMatrix) == 16:
-            m_c2w = np.array(camera_params.cam2worldMatrix).reshape(4, 4)
-        
-        # 构建深度二维数组
         try:
-            depth_np = np.array(depth_data, dtype=np.float32).reshape((height, width))
-        except Exception:
-            depth_np = None
-        
-        if depth_np is None:
-            return None
-        
-        # 按ROI过滤候选目标
-        candidates = []
-        for idx, box in enumerate(detection_boxes):
-            # 计算中心点
-            center_x = 0.5 * (float(box.xmin) + float(box.xmax))
-            center_y = 0.5 * (float(box.ymin) + float(box.ymax))
+            # 提取相机参数
+            width = camera_params.width
+            height = camera_params.height
+            cx, cy = camera_params.cx, camera_params.cy
+            fx, fy = camera_params.fx, camera_params.fy
+            k1, k2 = camera_params.k1, camera_params.k2
+            f2rc = camera_params.f2rc
             
-            # ROI过滤
-            if roi_config and roi_config.get('enabled'):
-                if not cls._is_point_in_roi(center_x, center_y, roi_config):
-                    continue
+            # 相机到世界坐标系的变换矩阵（内置于相机参数中）
+            m_c2w = None
+            if hasattr(camera_params, 'cam2worldMatrix') and len(camera_params.cam2worldMatrix) == 16:
+                m_c2w = np.array(camera_params.cam2worldMatrix).reshape(4, 4)
+            
+            # 计算中心点
+            center_x = 0.5 * (float(detection.xmin) + float(detection.xmax))
+            center_y = 0.5 * (float(detection.ymin) + float(detection.ymax))
             
             # 获取mask面积
-            mask = getattr(box, 'seg_mask', None)
+            mask = getattr(detection, 'seg_mask', None)
             if mask is not None:
                 area = float(mask.sum())
             else:
                 # 没有mask，使用矩形面积
-                area = float((box.xmax - box.xmin) * (box.ymax - box.ymin))
+                area = float((detection.xmax - detection.xmin) * (detection.ymax - detection.ymin))
             
             # 获取深度值（使用稳健估计）
             cx_int = int(round(center_x))
             cy_int = int(round(center_y))
+            
+            # 检查 depth_data 格式
+            if not isinstance(depth_data, (list, tuple)):
+                import sys
+                print(f"[CoordinateProcessor] depth_data 类型错误: {type(depth_data)}", file=sys.stderr)
+                return None
+            
             depth = cls._get_robust_depth_at_point(cx_int, cy_int, depth_data, width, height, radius=1)
             
             if depth <= 0:
-                continue
+                import sys
+                print(f"[CoordinateProcessor] 深度值无效: depth={depth}, center=({cx_int},{cy_int})", file=sys.stderr)
+                return None
             
-            # 计算3D相机坐标
-            success, cam3d = cls._calculate_3d_fast(
+            # 第一步：计算3D世界坐标（相机已通过 m_c2w 转换为世界坐标）
+            # 注意：这里返回的是世界坐标，不是相机坐标
+            success, world3d = cls._calculate_3d_fast(
                 center_x, center_y, depth,
                 cx, cy, fx, fy, k1, k2, f2rc, m_c2w
             )
             
             if not success:
-                continue
+                return None
             
-            # 转换到机器人坐标系
-            robot3d = cls._transform_point_fast(cam3d, transformation_matrix)
-            if robot3d is None:
-                robot3d = cam3d  # 回退到相机坐标
+            # 第二步：转换到机器人坐标系（仅当提供了标定矩阵时）
+            # 注意：在 VisualCoreEnterpriseEdition 中，第二步转换在 handle_catch 中完成
+            # 这里保留是为了兼容直接传入 transformation_matrix 的情况
+            if transformation_matrix is not None:
+                robot3d = cls._transform_point_fast(world3d, transformation_matrix)
+                if robot3d is None:
+                    robot3d = world3d  # 回退到世界坐标
+            else:
+                robot3d = world3d  # 不进行第二步转换，直接使用世界坐标
             
-            candidates.append({
-                'idx': idx,
-                'box': box,
+            return {
                 'center': [center_x, center_y],
                 'depth': depth,
-                'camera_3d': cam3d,
-                'robot_3d': robot3d,
+                'camera_3d': world3d,  # 世界坐标（相机内部已通过 cam2worldMatrix 转换）
+                'robot_3d': robot3d,   # 机器人坐标（如果提供了 transformation_matrix）或世界坐标
                 'area': area,
-                'score': box.score,
-                'class_id': box.class_id
-            })
-        
-        if not candidates:
+                'score': float(detection.score),
+                'class_id': int(detection.class_id)
+            }
+            
+        except Exception:
             return None
-        
-        # 选择面积最大的目标
-        best = max(candidates, key=lambda c: c['area'])
-        
-        return {
-            'target_id': best['idx'] + 1,
-            'center': best['center'],
-            'camera_3d': best['camera_3d'],
-            'robot_3d': best['robot_3d'],
-            'depth': best['depth'],
-            'angle': 0.0,  # 分割模型不提供角度
-            'score': best['score'],
-            'class_id': best['class_id'],
-            'area': best['area'],
-            'original_box': best['box']
-        }
     
-    @staticmethod
-    def _is_point_in_roi(x: float, y: float, roi_config: Dict) -> bool:
-        """
-        检查点是否在矩形ROI内
-        
-        Args:
-            x, y: 点坐标
-            roi_config: ROI配置
-        
-        Returns:
-            点是否在ROI内
-        """
-        x1 = roi_config.get('x1')
-        y1 = roi_config.get('y1')
-        x2 = roi_config.get('x2')
-        y2 = roi_config.get('y2')
-        
-        if x1 is None or y1 is None or x2 is None or y2 is None:
-            return True
-        
-        return x1 <= x <= x2 and y1 <= y <= y2
-
+   

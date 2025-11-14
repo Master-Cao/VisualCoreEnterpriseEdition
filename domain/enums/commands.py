@@ -12,14 +12,19 @@ class MessageType(Enum):
 
 
 class VisionCoreCommands(Enum):
-    RESTART = "restart"
+    # 配置管理命令
     GET_CONFIG = "get_config"
     SAVE_CONFIG = "save_config"
+    
+    # 相机命令
     GET_IMAGE = "get_image"
-    GET_CALIBRAT_IMAGE = "get_calibrat_image"
-    SFTP_TEST = "sftp_test"
-    GET_SYSTEM_STATUS = "get_system_status"
+    
+    # 检测命令
     MODEL_TEST = "model_test"
+    CATCH = "catch"
+    
+    # 标定命令
+    GET_CALIBRAT_IMAGE = "get_calibrat_image"
     COORDINATE_CALIBRATION = "coordinate_calibration"
 
     def __eq__(self, other):
