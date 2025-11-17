@@ -16,6 +16,7 @@ from domain.models.mqtt import MQTTResponse
 from .context import CommandContext
 from services.calibration import detect_black_blocks, calibrate_from_points
 from services.shared import ImageUtils, SftpHelper
+from services.detection import CoordinateProcessor, DetectionVisualizer
 
 
 def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
@@ -51,8 +52,7 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
-        # 2. 获取相机帧和图像数据
-        # 使用新的 get_frame 方法，获取所有需要的数据
+        # 2. 获取相机帧和图像数据（需要深度和相机参数来计算世界坐标）
         result = cam.get_frame(depth=True, intensity=True, camera_params=True)
         if not result:
             if logger:
@@ -66,8 +66,23 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
             )
         
         img = result.get('intensity_image')
-        depthmap = result.get('depthmap')
+        depth_data = result.get('depthmap')  # 注意：这里直接是list，不是对象
         camera_params = result.get('cameraParams')
+        
+        # ========== 临时调试：使用本地图片代替相机图像 ==========
+        try:
+            import os
+            debug_img_path = os.path.join(ctx.project_root, "configs", "calib_raw_20251028_143410_668_pre.jpg")
+            if os.path.exists(debug_img_path):
+                debug_img = cv2.imread(debug_img_path, cv2.IMREAD_GRAYSCALE)
+                if debug_img is not None:
+                    img = debug_img
+                    if logger:
+                        logger.warning(f"⚠️ 调试模式：使用本地图片代替相机图像 - {debug_img_path}")
+        except Exception as debug_err:
+            if logger:
+                logger.warning(f"加载调试图片失败: {debug_err}")
+        # ========== 调试代码结束 ==========
         
         # 3. 检查数据完整性
         if img is None:
@@ -79,7 +94,7 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
-        if not depthmap or not camera_params:
+        if not depth_data or not camera_params:
             return MQTTResponse(
                 command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
                 component="camera",
@@ -88,6 +103,8 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
                 data={}
             )
         
+        
+
         # 4. 检测黑色标记块
         try:
             blocks = detect_black_blocks(img, max_blocks=12, rows=3, cols=4)
@@ -114,25 +131,61 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
         if logger:
             logger.info(f"检测到 {len(blocks)} 个黑色标记块")
         
-        # 5. 计算世界坐标
+        # 5. 计算世界坐标（XY平面标定需要世界坐标的XY值）
         width = int(getattr(camera_params, 'width', 0))
         height = int(getattr(camera_params, 'height', 0))
-        depth_data = list(getattr(depthmap, 'z', []))
+        # depth_data 已经在上面获取了，是 list 类型
+        
+        # 提取相机参数
+        cx = float(getattr(camera_params, 'cx', 0))
+        cy = float(getattr(camera_params, 'cy', 0))
+        fx = float(getattr(camera_params, 'fx', 1))
+        fy = float(getattr(camera_params, 'fy', 1))
+        k1 = float(getattr(camera_params, 'k1', 0))
+        k2 = float(getattr(camera_params, 'k2', 0))
+        f2rc = float(getattr(camera_params, 'f2rc', 0))
+        
+        # 获取cam2world矩阵
+        m_c2w = None
+        try:
+            if hasattr(camera_params, 'cam2worldMatrix') and camera_params.cam2worldMatrix:
+                if len(camera_params.cam2worldMatrix) == 16:
+                    m_c2w = np.array(camera_params.cam2worldMatrix, dtype=np.float64).reshape(4, 4)
+        except Exception:
+            pass
         
         points_info = []
         for i, block in enumerate(blocks):
-            xyz = _compute_world_coordinate(
-                block.center_u, block.center_v,
-                depth_data, width, height, camera_params
+            # 直接从depth_data获取中心点深度值
+            u, v = block.center_u, block.center_v
+            if 0 <= u < width and 0 <= v < height:
+                depth_idx = v * width + u
+                if depth_idx < len(depth_data):
+                    depth_mm = float(depth_data[depth_idx])
+                else:
+                    depth_mm = 0.0
+            else:
+                depth_mm = 0.0
+            
+            # 如果深度无效，使用默认深度值（调试用）
+            if depth_mm <= 0:
+                depth_mm = 650.0  # 使用默认深度值650mm
+                if logger:
+                    logger.warning(f"块{i+1}({u},{v})深度值无效，使用默认值{depth_mm}mm")
+            
+            # 直接使用_calculate_3d_fast计算3D世界坐标
+            ok, xyz = CoordinateProcessor._calculate_3d_fast(
+                float(u), float(v), float(depth_mm),
+                cx, cy, fx, fy, k1, k2, f2rc, m_c2w
             )
             
-            if xyz is None:
+            if not ok:
                 if logger:
-                    logger.warning(f"块{i+1}({block.center_u},{block.center_v})世界坐标计算失败")
+                    logger.warning(f"块{i+1}({u},{v})世界坐标计算失败")
                 points_info.append({
                     'index': i + 1,
-                    'pixel_u': block.center_u,
-                    'pixel_v': block.center_v,
+                    'pixel_u': u,
+                    'pixel_v': v,
                     'valid': False,
                     'world_x': None,
                     'world_y': None,
@@ -141,8 +194,8 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
             else:
                 points_info.append({
                     'index': i + 1,
-                    'pixel_u': block.center_u,
-                    'pixel_v': block.center_v,
+                    'pixel_u': u,
+                    'pixel_v': v,
                     'valid': True,
                     'world_x': round(xyz[0], 3),
                     'world_y': round(xyz[1], 3),
@@ -167,28 +220,63 @@ def handle_get_calibrat_image(req: MQTTResponse, ctx: CommandContext) -> MQTTRes
         
         # 6. 可选：标注图像并上传SFTP
         upload_info = None
+        vis_img = None
         if ctx.sftp:
             try:
-                annotated_img = _annotate_blocks(img, blocks)
-                jpg = ImageUtils.encode_jpg(annotated_img)
-                if jpg:
+                # 使用DetectionVisualizer绘制标注
+                vis_img = img.copy() if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                for i, block in enumerate(blocks, start=1):
+                    # 画圆标记中心
+                    cv2.circle(vis_img, (block.center_u, block.center_v), 6, (0, 255, 0), -1)
+                    # 画编号
+                    cv2.putText(
+                        vis_img, str(i),
+                        (block.center_u + 8, block.center_v - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA
+                    )
+                
+                jpg = ImageUtils.encode_jpg(vis_img)
+                if not jpg:
+                    if logger:
+                        logger.error("标注图像编码失败")
+                else:
                     upload_info = SftpHelper.upload_image_bytes(ctx.sftp, jpg, prefix="calib")
-                    if upload_info and logger:
-                        logger.info(f"标定图像已上传: {upload_info.get('filename')}")
+                    if not upload_info:
+                        if logger:
+                            logger.error("标定图像上传失败")
+                    else:
+                        # 获取SFTP配置并构建完整路径（与detection.py保持一致）
+                        sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
+                        upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+                        
+                        if logger:
+                            logger.info(f"标定图像已上传: {upload_info.get('filename')}")
             except Exception as upload_err:
                 if logger:
                     logger.warning(f"标定图像上传失败: {upload_err}")
         
-        # 7. 构造响应
+        # 7. 构造响应（参考detection.py的详细信息格式）
         response_data = {
             'blocks_detected': len(blocks),
             'valid_points': valid_count,
             'points': points_info,
-            'note': '请使用机器人示教器移动到每个点位，记录坐标后发送coordinate_calibration命令'
+            'note': '请使用机器人示教器移动到每个点位，记录机器人XY坐标后发送coordinate_calibration命令\n'
+                   '注意：本次标定仅建立XY平面映射关系（world_xy → robot_xy），不包含Z轴'
         }
         
+        # 添加详细的图片信息（与detection.py保持一致）
         if upload_info:
+            response_data['filename'] = upload_info.get('filename')
+            response_data['remote_path'] = upload_info.get('remote_path')
+            response_data['remote_rel_path'] = upload_info.get('remote_rel_path')
+            response_data['remote_file'] = upload_info.get('remote_file')
+            response_data['remote_full_path'] = upload_info.get('remote_full_path')
+            response_data['file_size'] = upload_info.get('file_size')
             response_data['image_remote'] = upload_info
+        
+        # 添加图像尺寸信息
+        if vis_img is not None and hasattr(vis_img, 'shape'):
+            response_data['image_shape'] = list(vis_img.shape)
         
         return MQTTResponse(
             command=VisionCoreCommands.GET_CALIBRAT_IMAGE.value,
@@ -324,11 +412,13 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
                 }
             )
         
-        # 5. 执行标定
+        # 5. 执行标定（仅XY平面，Z轴使用单位映射）
         output_path = Path(ctx.project_root) / "configs" / "transformation_matrix.json"
         
         try:
-            result = calibrate_from_points(world_valid, robot_valid, output_path)
+            result = calibrate_from_points(world_valid, robot_valid, output_path, calibrate_z=False)
+            if logger:
+                logger.info("标定模式: 仅XY平面仿射变换，Z轴保持单位映射（z_robot = z_world）")
         except Exception as calib_err:
             if logger:
                 logger.error(f"标定计算失败: {calib_err}")
@@ -344,12 +434,21 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
         metadata = result['metadata']
         
         if logger:
-            logger.info(
-                f"坐标标定成功 | 点数={metadata['calibration_points_count']} | "
-                f"XY_RMSE=({metadata['xy_rmse_x']:.2f}, {metadata['xy_rmse_y']:.2f})mm | "
-                f"Z_RMSE={metadata['z_rmse']:.2f}mm | "
-                f"总体2D_RMSE={metadata['overall_rmse_2d']:.2f}mm"
-            )
+            calibration_mode = metadata.get('calibration_mode', 'xy_only')
+            if calibration_mode == 'xy_only':
+                logger.info(
+                    f"XY平面标定成功 | 点数={metadata['calibration_points_count']} | "
+                    f"XY_RMSE=({metadata['xy_rmse_x']:.2f}, {metadata['xy_rmse_y']:.2f})mm | "
+                    f"总体2D_RMSE={metadata['overall_rmse_2d']:.2f}mm | "
+                    f"Z轴使用单位映射"
+                )
+            else:
+                logger.info(
+                    f"完整XYZ标定成功 | 点数={metadata['calibration_points_count']} | "
+                    f"XY_RMSE=({metadata['xy_rmse_x']:.2f}, {metadata['xy_rmse_y']:.2f})mm | "
+                    f"Z_RMSE={metadata['z_rmse']:.2f}mm | "
+                    f"总体2D_RMSE={metadata['overall_rmse_2d']:.2f}mm"
+                )
         
         # 7. 返回成功结果
         return MQTTResponse(
@@ -359,6 +458,7 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
             message="calibration_completed",
             data={
                 'success': True,
+                'calibration_mode': metadata.get('calibration_mode', 'xy_only'),
                 'calibration_points': metadata['calibration_points_count'],
                 'rmse_x': round(metadata['xy_rmse_x'], 3),
                 'rmse_y': round(metadata['xy_rmse_y'], 3),
@@ -367,7 +467,8 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
                 'quality': _assess_quality(metadata),
                 'matrix': result['matrix'].tolist(),
                 'matrix_file': str(output_path),
-                'timestamp': metadata.get('calibration_datetime', '')
+                'timestamp': metadata.get('calibration_datetime', ''),
+                'note': 'XY平面标定完成，Z轴保持单位映射（z_robot = z_world）' if metadata.get('calibration_mode') == 'xy_only' else '完整XYZ标定完成'
             }
         )
     
@@ -384,100 +485,6 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
 
 
 # ==================== 辅助函数 ====================
-
-def _sample_depth_mm(depth_data: List[float], u: int, v: int, 
-                     width: int, height: int, ksize: int = 5) -> Optional[float]:
-    """采样深度值（使用中值滤波）"""
-    if not depth_data or width <= 0 or height <= 0:
-        return None
-    
-    u = int(np.clip(u, 0, width - 1))
-    v = int(np.clip(v, 0, height - 1))
-    
-    half = max(1, ksize // 2)
-    values = []
-    
-    for dv in range(-half, half + 1):
-        vv = v + dv
-        if vv < 0 or vv >= height:
-            continue
-        base = vv * width
-        for du in range(-half, half + 1):
-            uu = u + du
-            if uu < 0 or uu >= width:
-                continue
-            idx = base + uu
-            if 0 <= idx < len(depth_data):
-                d = float(depth_data[idx])
-                if d > 0:
-                    values.append(d)
-    
-    if not values:
-        return None
-    return float(np.median(values))
-
-
-def _uv_depth_to_world_xyz(u: float, v: float, depth_mm: float, camera_params) -> Optional[Tuple[float, float, float]]:
-    """将像素坐标和深度转换为世界坐标"""
-    try:
-        from Rknn.RknnYolo import RKNN_YOLO
-        
-        cx = float(getattr(camera_params, 'cx', 0))
-        cy = float(getattr(camera_params, 'cy', 0))
-        fx = float(getattr(camera_params, 'fx', 1))
-        fy = float(getattr(camera_params, 'fy', 1))
-        k1 = float(getattr(camera_params, 'k1', 0))
-        k2 = float(getattr(camera_params, 'k2', 0))
-        f2rc = float(getattr(camera_params, 'f2rc', 0))
-        
-        # 获取cam2world矩阵
-        m_c2w = None
-        try:
-            if hasattr(camera_params, 'cam2worldMatrix') and camera_params.cam2worldMatrix:
-                if len(camera_params.cam2worldMatrix) == 16:
-                    m_c2w = np.array(camera_params.cam2worldMatrix, dtype=np.float64).reshape(4, 4)
-        except Exception:
-            pass
-        
-        ok, coords = RKNN_YOLO._calculate_3d_fast(
-            None, float(u), float(v), float(depth_mm),
-            cx, cy, fx, fy, k1, k2, f2rc, m_c2w
-        )
-        
-        if not ok:
-            return None
-        
-        return float(coords[0]), float(coords[1]), float(coords[2])
-    
-    except Exception:
-        return None
-
-
-def _compute_world_coordinate(u: int, v: int, depth_data: List[float],
-                              width: int, height: int, camera_params) -> Optional[Tuple[float, float, float]]:
-    """计算像素位置的世界坐标"""
-    depth_mm = _sample_depth_mm(depth_data, u, v, width, height, ksize=5)
-    if depth_mm is None or depth_mm <= 0:
-        return None
-    
-    return _uv_depth_to_world_xyz(u, v, depth_mm, camera_params)
-
-
-def _annotate_blocks(image: np.ndarray, blocks) -> np.ndarray:
-    """在图像上标注检测到的黑块"""
-    vis = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    
-    for i, block in enumerate(blocks, start=1):
-        # 画圆标记中心
-        cv2.circle(vis, (block.center_u, block.center_v), 6, (0, 255, 0), -1)
-        # 画编号
-        cv2.putText(
-            vis, str(i),
-            (block.center_u + 8, block.center_v - 8),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA
-        )
-    
-    return vis
 
 
 

@@ -256,53 +256,101 @@ def _pca_axes(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _order_grid_by_pca(centers: np.ndarray, rows: int, cols: int) -> List[Tuple[float, float]]:
-    """使用PCA对网格点排序"""
+    """
+    使用PCA对网格点排序，确保整齐的行列布局
+    
+    Args:
+        centers: 点的坐标数组 (N, 2)
+        rows: 目标行数
+        cols: 目标列数
+    
+    Returns:
+        按行优先顺序排列的点列表 [(x1,y1), (x2,y2), ...]
+    """
+    if len(centers) < rows * cols:
+        # 点数不足，直接返回
+        return [(float(p[0]), float(p[1])) for p in centers]
+    
+    # 1. PCA找到主方向
     m, u, v = _pca_axes(centers)
-    proj_u = (centers - m) @ u
-    proj_v = (centers - m) @ v
     
-    if rows >= 2:
-        data = proj_v.astype(np.float32).reshape(-1, 1)
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-4)
-        ret, labels, centers_k = cv2.kmeans(data, rows, None, criteria, 5, cv2.KMEANS_PP_CENTERS)
-        order = np.argsort(centers_k.reshape(-1))
-        label_map = {int(lbl): int(i) for i, lbl in enumerate(order)}
-        row_ids = np.array([label_map[int(l)] for l in labels.reshape(-1)])
+    # u: 第一主成分（通常是行方向，水平方向）
+    # v: 第二主成分（通常是列方向，垂直方向）
+    
+    # 2. 将所有点投影到主成分上
+    proj_u = (centers - m) @ u  # 水平方向投影
+    proj_v = (centers - m) @ v  # 垂直方向投影
+    
+    # 3. 创建网格结构：根据投影值分配行列索引
+    # 为每个点分配行号（基于垂直投影）
+    v_sorted_idx = np.argsort(proj_v)
+    
+    # 将点均匀分配到rows行
+    points_per_row = len(centers) // rows
+    remainder = len(centers) % rows
+    
+    row_assignments = np.zeros(len(centers), dtype=int)
+    current_idx = 0
+    for r in range(rows):
+        # 前面的行多分配一个点（如果有余数）
+        n_points = points_per_row + (1 if r < remainder else 0)
+        for i in range(n_points):
+            if current_idx < len(v_sorted_idx):
+                row_assignments[v_sorted_idx[current_idx]] = r
+                current_idx += 1
+    
+    # 4. 对每一行，选择最合适的cols个点，并按水平位置排序
+    grid_points = []
+    
+    for r in range(rows):
+        # 找到属于这一行的所有点
+        row_mask = row_assignments == r
+        row_indices = np.where(row_mask)[0]
         
-        rows_list = []
-        for r in range(rows):
-            idxs = np.where(row_ids == r)[0]
-            if idxs.size == 0:
-                rows_list.append([])
-                continue
-            row_pts = centers[idxs]
-            row_proj_u = proj_u[idxs]
-            order_in_row = np.argsort(row_proj_u)
-            rows_list.append(row_pts[order_in_row])
-    else:
-        order_u = np.argsort(proj_u)
-        rows_list = [centers[order_u]]
-    
-    ordered = []
-    for r in range(len(rows_list)):
-        row = rows_list[r]
-        if row is None or len(row) == 0:
+        if len(row_indices) == 0:
+            # 如果这一行没有点，跳过但保持行序
             continue
-        if cols and len(row) > cols:
-            step = len(row) / float(cols)
-            take = [int(round(i * step + 0.49)) for i in range(cols)]
-            take = np.clip(take, 0, len(row) - 1)
-            row = row[take]
-        ordered.append(row)
+        
+        row_centers = centers[row_indices]
+        row_proj_u = proj_u[row_indices]
+        
+        # 如果这一行点数多于cols，选择均匀分布的cols个点
+        if len(row_indices) > cols:
+            # 按水平位置排序
+            u_order = np.argsort(row_proj_u)
+            
+            # 均匀选择cols个点（确保分布均匀）
+            selected_indices = []
+            for c in range(cols):
+                # 计算理想位置（线性插值）
+                if cols > 1:
+                    ideal_pos = c * (len(u_order) - 1) / (cols - 1)
+                else:
+                    ideal_pos = 0
+                # 选择最接近理想位置的点
+                actual_idx = int(round(ideal_pos))
+                actual_idx = min(actual_idx, len(u_order) - 1)  # 防止越界
+                selected_indices.append(u_order[actual_idx])
+            
+            row_centers = row_centers[selected_indices]
+            row_proj_u = row_proj_u[selected_indices]
+        
+        # 按水平位置排序
+        u_order = np.argsort(row_proj_u)
+        sorted_row = row_centers[u_order]
+        
+        # 严格限制为cols个点
+        n_points = min(len(sorted_row), cols)
+        for i in range(n_points):
+            pt = sorted_row[i]
+            grid_points.append((float(pt[0]), float(pt[1])))
     
-    if rows and len(ordered) > rows:
-        ordered = ordered[:rows]
+    # 最终确保返回 rows * cols 个点（如果点数足够）
+    expected_count = rows * cols
+    if len(grid_points) > expected_count:
+        grid_points = grid_points[:expected_count]
     
-    pts = []
-    for r in ordered:
-        for p in r:
-            pts.append((float(p[0]), float(p[1])))
-    return pts
+    return grid_points
 
 
 def detect_black_blocks(image: np.ndarray, max_blocks: int = 12, 

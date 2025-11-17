@@ -200,7 +200,8 @@ def load_transformation_matrix(path: Path) -> Optional[np.ndarray]:
 
 def calibrate_from_points(world_points: List[Tuple[float, float, float]],
                           robot_points: List[Tuple[float, float, float]],
-                          output_path: Optional[Path] = None) -> Dict[str, Any]:
+                          output_path: Optional[Path] = None,
+                          calibrate_z: bool = True) -> Dict[str, Any]:
     """
     从世界坐标和机器人坐标执行完整标定流程
     
@@ -208,6 +209,7 @@ def calibrate_from_points(world_points: List[Tuple[float, float, float]],
         world_points: 世界坐标系点列表 [(xw, yw, zw), ...]
         robot_points: 机器人坐标系点列表 [(xr, yr, zr), ...]
         output_path: 输出文件路径，None则不保存
+        calibrate_z: 是否进行Z轴标定，False则Z轴使用单位映射（保持不变）
     
     Returns:
         标定结果字典，包含矩阵和统计信息
@@ -227,8 +229,13 @@ def calibrate_from_points(world_points: List[Tuple[float, float, float]],
     # XY仿射拟合
     A2x3, xy_stats = fit_affine_xy(world_xy, robot_xy)
     
-    # Z线性拟合
-    alpha, beta, z_stats = fit_linear_z(world_z, robot_z)
+    # Z线性拟合（可选）
+    if calibrate_z:
+        alpha, beta, z_stats = fit_linear_z(world_z, robot_z)
+    else:
+        # 使用单位映射：z_robot = z_world（保持不变）
+        alpha, beta = 1.0, 0.0
+        z_stats = {'rmse_z': 0.0}
     
     # 合成4x4矩阵
     matrix_4x4 = compose_affine_4x4_from_xy_and_z(A2x3, alpha, beta)
@@ -236,6 +243,7 @@ def calibrate_from_points(world_points: List[Tuple[float, float, float]],
     # 准备元数据
     metadata = {
         'calibration_points_count': len(world_points),
+        'calibration_mode': 'xy_only' if not calibrate_z else 'xyz_full',
         'xy_rmse_x': xy_stats['rmse_x'],
         'xy_rmse_y': xy_stats['rmse_y'],
         'z_rmse': z_stats['rmse_z'],
