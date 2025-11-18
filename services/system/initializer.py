@@ -3,6 +3,7 @@
 
 from typing import Optional, Any
 import time
+import threading
 
 from services.comm.command_router import CommandRouter
 from services.comm.comm_manager import CommManager
@@ -45,7 +46,7 @@ class SystemInitializer:
         """
         # 路由注册（在通信启动前完成），并先绑定可用依赖
         self.router.register_default()
-        self.router.bind(config=self._cfg, logger=self._logger)
+        self.router.bind(config=self._cfg, logger=self._logger, initializer=self)
         
         # ========== 第一阶段：启动关键组件（主线程阻塞重试） ==========
         
@@ -508,6 +509,77 @@ class SystemInitializer:
         finally:
             if self._logger:
                 self._logger.info("✓ 系统已完全停止，所有资源已释放")
+
+    def restart(self, new_config: Optional[dict] = None, delay: float = 2.0):
+        """
+        重启系统（用于配置更新后重新加载）
+        
+        Args:
+            new_config: 新的配置字典，如果为None则重新加载配置文件
+            delay: 延迟启动时间（秒），给客户端足够时间接收响应
+        """
+        if self._logger:
+            self._logger.info("收到系统重启请求...")
+        
+        def _do_restart():
+            try:
+                # 等待一段时间，确保响应已发送给客户端
+                time.sleep(delay)
+                
+                if self._logger:
+                    self._logger.info("开始执行系统重启...")
+                
+                # 1. 停止所有组件
+                self.stop()
+                
+                # 2. 更新配置
+                if new_config:
+                    self._cfg = new_config
+                    if self._logger:
+                        self._logger.info("已加载新配置")
+                else:
+                    # 重新加载配置文件
+                    try:
+                        import yaml
+                        import os
+                        cfg_path = os.path.join(os.getcwd(), "configs", "config.yaml")
+                        with open(cfg_path, "r", encoding="utf-8") as f:
+                            self._cfg = yaml.safe_load(f) or {}
+                        if self._logger:
+                            self._logger.info("已从文件重新加载配置")
+                    except Exception as e:
+                        if self._logger:
+                            self._logger.error(f"重新加载配置失败: {e}，使用当前配置")
+                
+                # 3. 重新初始化配置参数
+                bm = (self._cfg.get("board_mode") or {})
+                mon = (bm.get("monitoring") or {})
+                self._retry_delay = int(bm.get("retry_delay", 5))
+                self._check_interval = int(mon.get("check_interval", 30))
+                self._failure_threshold = int(mon.get("failure_threshold", 1))
+                
+                # 4. 重新启动所有组件
+                self.start()
+                
+                if self._logger:
+                    self._logger.info("✓ 系统重启完成")
+                    
+            except Exception as e:
+                if self._logger:
+                    self._logger.error(f"系统重启失败: {e}")
+                # 重启失败也要尝试启动，确保系统不处于完全停止状态
+                try:
+                    self.start()
+                except Exception as e2:
+                    if self._logger:
+                        self._logger.critical(f"重启后启动失败: {e2}")
+        
+        # 在后台线程执行重启，避免阻塞当前响应
+        restart_thread = threading.Thread(target=_do_restart, daemon=True, name="SystemRestartThread")
+        restart_thread.start()
+        
+        if self._logger:
+            self._logger.info(f"系统重启已安排，将在 {delay} 秒后执行")
 
     # 监控注册
     def _setup_monitor(self):

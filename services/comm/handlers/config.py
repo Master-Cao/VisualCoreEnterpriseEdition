@@ -111,12 +111,23 @@ def handle_save_config(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             merged = backup_and_persist_config(ctx.project_root, partial_updates)
             ctx.config.clear()
             ctx.config.update(merged)
+            
+            # 触发系统重启以应用新配置
+            if ctx.initializer:
+                try:
+                    if ctx.logger:
+                        ctx.logger.info("配置已更新，准备重启系统以应用新配置...")
+                    ctx.initializer.restart(new_config=merged, delay=2.0)
+                except Exception as restart_err:
+                    if ctx.logger:
+                        ctx.logger.error(f"触发系统重启失败: {restart_err}")
+            
             return MQTTResponse(
                 command=VisionCoreCommands.SAVE_CONFIG.value,
                 component="config_manager",
                 messageType=MessageType.SUCCESS,
                 message="saved",
-                data={},
+                data={"restart_scheduled": True, "restart_delay": 2.0},
             )
         
         return MQTTResponse(
@@ -183,14 +194,25 @@ def backup_and_persist_config(project_root: str, updates: dict, max_backups: int
                         current = loaded
             except Exception:
                 current = {}
+            
+            # 创建备份目录
+            backup_dir = os.path.join(project_root, "configs", "config_backup")
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # 备份文件名：config.yaml.backup_YYYYMMDD_HHMMSS
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = f"{cfg_path}.backup_{ts}"
+            backup_filename = f"config.yaml.backup_{ts}"
+            backup_path = os.path.join(backup_dir, backup_filename)
+            
             try:
                 shutil.copy2(cfg_path, backup_path)
             except Exception:
                 pass
+            
+            # 清理旧备份（在 config_back 文件夹中）
             try:
-                files = sorted(glob.glob(f"{cfg_path}.backup_*"), key=lambda p: os.path.getmtime(p), reverse=True)
+                backup_pattern = os.path.join(backup_dir, "config.yaml.backup_*")
+                files = sorted(glob.glob(backup_pattern), key=lambda p: os.path.getmtime(p), reverse=True)
                 for old in files[max_backups:]:
                     try:
                         os.remove(old)

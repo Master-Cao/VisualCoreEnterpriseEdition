@@ -215,3 +215,6 @@ logs/
 
 # Local runtime configs (do not commit secrets)
 configs/transformation_matrix.json
+
+*/config_backup/*
+*/transformation_matrix_backup/*

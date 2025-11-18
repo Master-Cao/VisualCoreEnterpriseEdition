@@ -13,5 +13,6 @@ class CommandContext:
     monitor: Optional[Any]
     logger: Optional[Any]
     project_root: str
+    initializer: Optional[Any] = None
 
 

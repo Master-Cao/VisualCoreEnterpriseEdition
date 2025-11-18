@@ -153,13 +153,19 @@ def save_transformation_matrix(path: Path,
     # 1. 备份现有文件（如果存在）
     if path.exists():
         try:
-            # 创建带时间戳的备份文件
+            # 创建备份目录
+            backup_dir = path.parent / "transformation_matrix_backup"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 备份文件名：transformation_matrix.json.backup_YYYYMMDD_HHMMSS
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = Path(str(path) + f".backup_{ts}")
+            backup_filename = f"{path.name}.backup_{ts}"
+            backup_path = backup_dir / backup_filename
+            
             shutil.copy2(path, backup_path)
             
             # 清理旧的备份文件，只保留最新的 max_backups 个
-            backup_pattern = str(path) + ".backup_*"
+            backup_pattern = str(backup_dir / f"{path.name}.backup_*")
             backup_files = sorted(
                 glob.glob(backup_pattern), 
                 key=lambda p: os.path.getmtime(p), 
@@ -230,51 +236,59 @@ def load_transformation_matrix(path: Path) -> Optional[np.ndarray]:
         return None
 
 
-def calibrate_from_points(world_points: List[Tuple[float, float, float]],
-                          robot_points: List[Tuple[float, float, float]],
-                          output_path: Optional[Path] = None,
-                          calibrate_z: bool = True) -> Dict[str, Any]:
+def calibrate_from_points(xy_world_points: List[Tuple[float, float]],
+                          xy_robot_points: List[Tuple[float, float]],
+                          z_world_heights: Optional[List[float]] = None,
+                          z_robot_heights: Optional[List[float]] = None,
+                          output_path: Optional[Path] = None) -> Dict[str, Any]:
     """
-    从世界坐标和机器人坐标执行完整标定流程
+    从世界坐标和机器人坐标执行完整标定流程（优化版：XY和Z数据分开传递）
     
     Args:
-        world_points: 世界坐标系点列表 [(xw, yw, zw), ...]
-        robot_points: 机器人坐标系点列表 [(xr, yr, zr), ...]
+        xy_world_points: XY平面世界坐标点列表 [(xw, yw), ...]
+        xy_robot_points: XY平面机器人坐标点列表 [(xr, yr), ...]
+        z_world_heights: Z轴世界坐标列表 [zw1, zw2, ...]（相机高度），None则不进行Z轴标定
+        z_robot_heights: Z轴机器人坐标列表 [zr1, zr2, ...]，None则不进行Z轴标定
         output_path: 输出文件路径，None则不保存
-        calibrate_z: 是否进行Z轴标定，False则Z轴使用单位映射（保持不变）
     
     Returns:
         标定结果字典，包含矩阵和统计信息
     """
-    if len(world_points) != len(robot_points):
-        raise ValueError("世界坐标和机器人坐标数量必须相同")
+    # 验证XY平面点数
+    if len(xy_world_points) != len(xy_robot_points):
+        raise ValueError("XY平面：世界坐标和机器人坐标数量必须相同")
     
-    if len(world_points) < 3:
-        raise ValueError("至少需要3组对应点进行标定")
-    
-    # 分离XY和Z
-    world_xy = [(p[0], p[1]) for p in world_points]
-    robot_xy = [(p[0], p[1]) for p in robot_points]
-    world_z = [p[2] for p in world_points]
-    robot_z = [p[2] for p in robot_points]
+    if len(xy_world_points) < 3:
+        raise ValueError("XY平面标定至少需要3组对应点")
     
     # XY仿射拟合
-    A2x3, xy_stats = fit_affine_xy(world_xy, robot_xy)
+    A2x3, xy_stats = fit_affine_xy(xy_world_points, xy_robot_points)
     
     # Z线性拟合（可选）
+    calibrate_z = (z_world_heights is not None and z_robot_heights is not None 
+                   and len(z_world_heights) >= 2 and len(z_robot_heights) >= 2)
+    
     if calibrate_z:
-        alpha, beta, z_stats = fit_linear_z(world_z, robot_z)
+        # 验证Z轴点数
+        if len(z_world_heights) != len(z_robot_heights):
+            raise ValueError("Z轴：世界坐标和机器人坐标数量必须相同")
+        
+        alpha, beta, z_stats = fit_linear_z(z_world_heights, z_robot_heights)
+        z_points_count = len(z_world_heights)
     else:
         # 使用单位映射：z_robot = z_world（保持不变）
         alpha, beta = 1.0, 0.0
         z_stats = {'rmse_z': 0.0}
+        z_points_count = 0
     
     # 合成4x4矩阵
     matrix_4x4 = compose_affine_4x4_from_xy_and_z(A2x3, alpha, beta)
     
     # 准备元数据
     metadata = {
-        'calibration_points_count': len(world_points),
+        'calibration_points_count': len(xy_world_points) + z_points_count,
+        'calibration_points_count_xy': len(xy_world_points),
+        'calibration_points_count_z': z_points_count,
         'calibration_mode': 'xy_only' if not calibrate_z else 'xyz_full',
         'xy_rmse_x': xy_stats['rmse_x'],
         'xy_rmse_y': xy_stats['rmse_y'],
