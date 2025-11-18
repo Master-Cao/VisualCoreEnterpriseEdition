@@ -35,14 +35,7 @@ def handle_model_test(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 message="camera_not_ready",
                 data={},
             )
-        if not sftp:
-            return MQTTResponse(
-                command=VisionCoreCommands.MODEL_TEST.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="sftp_not_ready",
-                data={},
-            )
+        # SFTP是非关键组件，允许为None（禁用时不影响测试功能）
         
         # 使用新的 get_frame 方法，只获取强度图像以加快速度
         result = cam.get_frame(depth=False, intensity=True, camera_params=False)
@@ -81,43 +74,41 @@ def handle_model_test(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
         
-        # 上传到SFTP
-        upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="detection_test")
-        if not upload_info:
-            return MQTTResponse(
-                command=VisionCoreCommands.MODEL_TEST.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="upload_failed",
-                data={},
-            )
+        # 上传到SFTP（非关键操作，失败不影响测试结果）
+        upload_info = None
+        if sftp:
+            try:
+                upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="detection_test")
+                if upload_info:
+                    # 获取SFTP配置并构建完整路径
+                    sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
+                    upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+                elif logger:
+                    logger.warning("SFTP上传失败，但继续返回测试结果")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"SFTP上传异常: {e}，但继续返回测试结果")
+        else:
+            if logger:
+                logger.debug("SFTP未启用，跳过图像上传")
         
-        # 获取SFTP配置并构建完整路径
-        sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
-        upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
-        
-        # 构建返回数据
-        remote_path = upload_info.get("remote_path")
-        filename = upload_info.get("filename")
-        remote_rel_path = upload_info.get("remote_rel_path")
-        remote_full_path = upload_info.get("remote_full_path")
-        
+        # 构建返回数据（SFTP信息可选）
         payload = {
             "detection_count": count,
             "infer_time_ms": round(dt, 1),
-            "filename": filename,
-            "remote_path": remote_path,
-            "remote_rel_path": remote_rel_path,
-            "remote_file": upload_info.get("remote_file"),
-            "remote_full_path": remote_full_path,
-            "file_size": upload_info.get("file_size"),
+            "filename": upload_info.get("filename") if upload_info else None,
+            "remote_path": upload_info.get("remote_path") if upload_info else None,
+            "remote_rel_path": upload_info.get("remote_rel_path") if upload_info else None,
+            "remote_file": upload_info.get("remote_file") if upload_info else None,
+            "remote_full_path": upload_info.get("remote_full_path") if upload_info else None,
+            "file_size": upload_info.get("file_size") if upload_info else None,
             "image_shape": list(vis_img.shape) if hasattr(vis_img, "shape") else None,
         }
         
-        if logger and filename:
+        if logger and upload_info:
             try:
                 logger.info(
-                    f"检测测试完成: {count}个目标, 推理耗时={dt:.1f}ms, 图像已上传: {filename}"
+                    f"检测测试完成: {count}个目标, 推理耗时={dt:.1f}ms, 图像已上传: {upload_info.get('filename')}"
                 )
             except Exception:
                 pass
@@ -159,6 +150,11 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
     7. 通过TCP发送响应：p1_flag,p2_flag,x,y,z
     """
     logger = getattr(ctx, "logger", None)
+    
+    # ===== 性能监控：记录各步骤耗时 =====
+    time_start = time.time()
+    time_points = {}
+    
     try:
         det = ctx.detector
         cam = ctx.camera
@@ -181,20 +177,15 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 message="camera_not_ready",
                 data={"response": "0,0,0,0,0"},
             )
-        if not sftp:
-            return MQTTResponse(
-                command=VisionCoreCommands.CATCH.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="sftp_not_ready",
-                data={"response": "0,0,0,0,0"},
-            )
+        # SFTP是非关键组件，允许为None（禁用时不影响检测功能）
         
         # 获取相机数据（深度、强度、参数）
+        t0_camera = time.time()
         result = cam.get_frame(depth=True, intensity=True, camera_params=True)
         img = result.get('intensity_image') if result else None
         depth_data = result.get('depthmap') if result else None
         camera_params = result.get('cameraParams') if result else None
+        time_points['camera'] = (time.time() - t0_camera) * 1000.0
         
         if img is None:
             return MQTTResponse(
@@ -206,19 +197,22 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             )
         
         # 执行检测
-        t0 = time.time()
+        t0_detect = time.time()
         detection_results = det.detect(img)
-        dt_detect = (time.time() - t0) * 1000.0
+        time_points['detection'] = (time.time() - t0_detect) * 1000.0
         total_count = len(detection_results) if hasattr(detection_results, "__len__") else (1 if detection_results else 0)
         
         # 先绘制检测结果（不包含ROI）
+        t0_visualize = time.time()
         vis_img = DetectionVisualizer.draw_detections(
             img, detection_results,
             class_names=["seasoning", "hand"], 
             show_bbox=False
         )
+        time_points['visualize_detections'] = (time.time() - t0_visualize) * 1000.0
         
         # 直接从config中获取ROI配置
+        t0_roi_setup = time.time()
         roi_cfg = ctx.config.get('roi') or {}
         regions = roi_cfg.get('regions') or []
         min_area = float(roi_cfg.get('minArea', 0))
@@ -263,7 +257,10 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             else:
                 vis_img = DetectionVisualizer.draw_roi(vis_img, roi_config, color=(128, 128, 128), thickness=2)  # 灰色
         
+        time_points['roi_setup'] = (time.time() - t0_roi_setup) * 1000.0
+        
         # 过滤seasoning目标（只针对类别0）
+        t0_filter = time.time()
         seasoning_detections = []
         for det_box in detection_results:
             class_id = int(getattr(det_box, 'class_id', getattr(det_box, 'classId', -1)))
@@ -316,6 +313,7 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             roi_list,
             min_area=min_area
         )
+        time_points['filter_and_select'] = (time.time() - t0_filter) * 1000.0
         
         if logger:
             try:
@@ -374,6 +372,7 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
         robot_coordinates = None
         
         # 如果有有效目标，进行坐标计算
+        t0_coordinate = time.time()
         if best_target:
             if logger:
                 logger.info(f"开始计算最佳目标坐标: depth_data={'有' if depth_data else '无'}, "
@@ -452,8 +451,12 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                     if logger:
                         logger.error(f"✗ 坐标计算失败: CoordinateProcessor返回None (可能深度值无效或计算出错)")
         
+        time_points['coordinate_calc'] = (time.time() - t0_coordinate) * 1000.0
+        
         # 编码为JPG并上传
+        t0_encode = time.time()
         jpg = ImageUtils.encode_jpg(vis_img)
+        time_points['jpg_encode'] = (time.time() - t0_encode) * 1000.0
         if jpg is None:
             return MQTTResponse(
                 command=VisionCoreCommands.CATCH.value,
@@ -463,20 +466,26 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={"response": "0,0,0,0,0"},
             )
         
-        # 上传到SFTP
-        upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="catch")
-        if not upload_info:
-            return MQTTResponse(
-                command=VisionCoreCommands.CATCH.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="upload_failed",
-                data={"response": "0,0,0,0,0"},
-            )
+        # 上传到SFTP（非关键操作，失败不影响检测结果）
+        t0_upload = time.time()
+        upload_info = None
+        if sftp:
+            try:
+                upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="catch")
+                if not upload_info and logger:
+                    logger.warning("SFTP上传失败，但继续返回检测结果")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"SFTP上传异常: {e}，但继续返回检测结果")
+        else:
+            if logger:
+                logger.debug("SFTP未启用，跳过图像上传")
+        time_points['sftp_upload'] = (time.time() - t0_upload) * 1000.0
         
-        # 获取SFTP配置并构建完整路径
-        sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
-        upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+        # 获取SFTP配置并构建完整路径（如果有上传信息）
+        if upload_info:
+            sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
+            upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
         
         # 构建返回数据
         payload = {
@@ -484,32 +493,49 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             "total_detection_count": total_count,
             "p1roi_detection_count": p1_count,
             "p2roi_detection_count": p2_count,
-            "infer_time_ms": round(dt_detect, 1),
+            "infer_time_ms": round(time_points.get('detection', 0), 1),
             "has_target": best_target_info is not None,
             "best_target": best_target_info,
-            "filename": upload_info.get("filename"),
-            "remote_path": upload_info.get("remote_path"),
-            "remote_rel_path": upload_info.get("remote_rel_path"),
-            "remote_file": upload_info.get("remote_file"),
-            "remote_full_path": upload_info.get("remote_full_path"),
-            "file_size": upload_info.get("file_size"),
+            "filename": upload_info.get("filename") if upload_info else None,
+            "remote_path": upload_info.get("remote_path") if upload_info else None,
+            "remote_rel_path": upload_info.get("remote_rel_path") if upload_info else None,
+            "remote_file": upload_info.get("remote_file") if upload_info else None,
+            "remote_full_path": upload_info.get("remote_full_path") if upload_info else None,
+            "file_size": upload_info.get("file_size") if upload_info else None,
             "image_shape": list(vis_img.shape) if hasattr(vis_img, "shape") else None,
         }
         
+        # 计算总耗时
+        time_points['total'] = (time.time() - time_start) * 1000.0
+        
         if logger:
             try:
+                # 构建详细的性能日志
+                perf_details = (
+                    f"相机取图={time_points.get('camera', 0):.1f}ms, "
+                    f"AI检测={time_points.get('detection', 0):.1f}ms, "
+                    f"ROI配置={time_points.get('roi_setup', 0):.1f}ms, "
+                    f"目标筛选={time_points.get('filter_and_select', 0):.1f}ms, "
+                    f"坐标计算={time_points.get('coordinate_calc', 0):.1f}ms, "
+                    f"可视化={time_points.get('visualize_detections', 0):.1f}ms, "
+                    f"JPG编码={time_points.get('jpg_encode', 0):.1f}ms, "
+                    f"SFTP上传={time_points.get('sftp_upload', 0):.1f}ms"
+                )
+                
                 if best_target_info:
                     logger.info(
                         f"抓取命令完成: 检测{total_count}个目标, "
                         f"p1roi内{p1_count}个, p2roi内{p2_count}个, "
-                        f"推理耗时={dt_detect:.1f}ms, TCP响应='{tcp_response}'"
+                        f"TCP响应='{tcp_response}' | 总耗时={time_points['total']:.1f}ms"
                     )
+                    logger.info(f"性能分析: {perf_details}")
                 else:
                     logger.info(
-                            f"抓取命令完成: 检测{total_count}个目标, "
-                            f"p1roi内{p1_count}个, p2roi内{p2_count}个, "
-                            f"推理耗时={dt_detect:.1f}ms, 无有效目标, TCP响应='0,0,0,0,0'"
+                        f"抓取命令完成: 检测{total_count}个目标, "
+                        f"p1roi内{p1_count}个, p2roi内{p2_count}个, "
+                        f"无有效目标, TCP响应='0,0,0,0,0' | 总耗时={time_points['total']:.1f}ms"
                     )
+                    logger.info(f"性能分析: {perf_details}")
             except Exception:
                 pass
         
@@ -533,39 +559,6 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             message=str(e),
             data={"response": "0,0,0,0,0"},
         )
-
-
-def _load_transformation_matrix(project_root: str) -> np.ndarray:
-    """
-    加载坐标转换矩阵
-    
-    Args:
-        project_root: 项目根目录
-    
-    Returns:
-        4x4变换矩阵，如果加载失败返回None
-    """
-    try:
-        matrix_path = os.path.join(project_root, "configs", "transformation_matrix.json")
-        
-        if not os.path.exists(matrix_path):
-            return None
-        
-        with open(matrix_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        # 获取4x4矩阵
-        matrix_data = data.get('matrix')
-        if not isinstance(matrix_data, list) or len(matrix_data) != 4:
-            return None
-        
-        if not all(isinstance(row, list) and len(row) == 4 for row in matrix_data):
-            return None
-        
-        return np.array(matrix_data, dtype=np.float64)
-        
-    except Exception:
-        return None
 
 
 def _world_to_robot_using_calib(world_xyz, project_root: str):

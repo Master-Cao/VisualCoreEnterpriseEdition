@@ -20,14 +20,7 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             )
 
         sftp = ctx.sftp
-        if not sftp:
-            return MQTTResponse(
-                command=VisionCoreCommands.GET_IMAGE.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="sftp_not_ready",
-                data={},
-            )
+        # SFTP是非关键组件，允许为None（禁用时不影响图像获取功能）
 
         # 使用新的 get_frame 方法，只获取强度图像以加快速度
         result = cam.get_frame(depth=False, intensity=True, camera_params=False)
@@ -65,45 +58,46 @@ def handle_get_image(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                 data={},
             )
 
-        upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="camera_image")
-        if not upload_info:
-            return MQTTResponse(
-                command=VisionCoreCommands.GET_IMAGE.value,
-                component="sftp",
-                messageType=MessageType.ERROR,
-                message="upload_failed",
-                data={},
-            )
-
-        # 获取SFTP配置并构建完整路径
-        sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
-        upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+        # 上传到SFTP（非关键操作，失败不影响图像获取）
+        upload_info = None
+        if sftp:
+            try:
+                upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="camera_image")
+                if upload_info:
+                    # 获取SFTP配置并构建完整路径
+                    sftp_cfg = ctx.config.get("sftp") if isinstance(ctx.config, dict) else {}
+                    upload_info = SftpHelper.get_upload_info_with_prefix(upload_info, sftp_cfg)
+                elif logger:
+                    logger.warning("SFTP上传失败，但继续返回图像信息")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"SFTP上传异常: {e}，但继续返回图像信息")
+        else:
+            if logger:
+                logger.debug("SFTP未启用，跳过图像上传")
         
-        remote_path = upload_info.get("remote_path")
-        filename = upload_info.get("filename")
-        remote_rel_path = upload_info.get("remote_rel_path")
-        remote_full_path = upload_info.get("remote_full_path")
+        # 构建返回数据（SFTP信息可选）
         payload = {
             "has_frame": True,
-            "filename": filename,
-            "remote_path": remote_path,
-            "remote_rel_path": upload_info.get("remote_rel_path"),
-            "remote_file": upload_info.get("remote_file"),
-            "file_size": upload_info.get("file_size"),
+            "filename": upload_info.get("filename") if upload_info else None,
+            "remote_path": upload_info.get("remote_path") if upload_info else None,
+            "remote_rel_path": upload_info.get("remote_rel_path") if upload_info else None,
+            "remote_file": upload_info.get("remote_file") if upload_info else None,
+            "file_size": upload_info.get("file_size") if upload_info else None,
             "image_shape": list(img.shape) if hasattr(img, "shape") else None,
             "image_remote": upload_info,
-            "remote_full_path": remote_full_path,
+            "remote_full_path": upload_info.get("remote_full_path") if upload_info else None,
         }
 
-        if logger and filename:
+        if logger and upload_info:
             try:
                 logger.info(
                     "camera image captured",
-                    extra={"filename": filename, "remote_path": remote_path},
+                    extra={"filename": upload_info.get("filename"), "remote_path": upload_info.get("remote_path")},
                 )
             except Exception:
                 try:
-                    logger.info(f"camera image captured: {filename} -> {remote_path}")
+                    logger.info(f"camera image captured: {upload_info.get('filename')} -> {upload_info.get('remote_path')}")
                 except Exception:
                     pass
 

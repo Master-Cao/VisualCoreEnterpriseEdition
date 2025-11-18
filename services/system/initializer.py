@@ -23,6 +23,10 @@ class SystemInitializer:
         self.detector = None
         self.sftp: Optional[SftpClient] = None
         self.monitor: Optional[SystemMonitor] = None
+        
+        # 添加停止事件，用于响应Ctrl+C中断
+        self._stop_event = threading.Event()
+        self._is_stopping = False
 
         bm = (self._cfg.get("board_mode") or {})
         mon = (bm.get("monitoring") or {})
@@ -52,12 +56,24 @@ class SystemInitializer:
         
         # 1. 启动TCP通信（关键组件，必须成功）
         self._start_tcp_with_retry()
+        if self._is_stopping:
+            if self._logger:
+                self._logger.warning("启动过程被中断 (TCP)")
+            return
         
         # 2. 启动相机（关键组件，必须成功）
         self._start_camera_with_retry()
+        if self._is_stopping:
+            if self._logger:
+                self._logger.warning("启动过程被中断 (Camera)")
+            return
         
         # 3. 启动检测器（关键组件，必须成功）
         self._start_detector_with_retry()
+        if self._is_stopping:
+            if self._logger:
+                self._logger.warning("启动过程被中断 (Detector)")
+            return
         
         # ========== 第二阶段：启动非关键组件（允许失败，后台重试） ==========
         
@@ -91,9 +107,9 @@ class SystemInitializer:
         # 初始化CommManager
         self.comm = CommManager(config=self._cfg, router=self.router, logger=self._logger)
         
-        # 无限重试直到TCP启动成功
+        # 无限重试直到TCP启动成功（可被Ctrl+C中断）
         retry_count = 0
-        while True:
+        while not self._is_stopping:
             try:
                 ok = self.comm.restart_tcp()
                 if ok:
@@ -109,13 +125,17 @@ class SystemInitializer:
                     # 每10次失败记录一次日志（或首次失败）
                     if self._logger and (retry_count == 1 or retry_count % 10 == 0):
                         self._logger.error(f"✗ TCP服务器启动失败 | 已重试{retry_count}次 | {self._retry_delay}秒后继续...")
-                    time.sleep(self._retry_delay)
+                    # 使用可中断的等待
+                    if self._stop_event.wait(timeout=self._retry_delay):
+                        break  # 收到停止信号
             except Exception as e:
                 retry_count += 1
                 # 每10次失败记录一次日志（或首次失败）
                 if self._logger and (retry_count == 1 or retry_count % 10 == 0):
                     self._logger.error(f"✗ TCP服务器启动异常: {e} | 已重试{retry_count}次 | {self._retry_delay}秒后继续...")
-                time.sleep(self._retry_delay)
+                # 使用可中断的等待
+                if self._stop_event.wait(timeout=self._retry_delay):
+                    break  # 收到停止信号
     
     def _start_camera_with_retry(self):
         """启动相机（主线程无限重试直到成功）"""
@@ -144,9 +164,9 @@ class SystemInitializer:
             login_attempts=login_attempts,
         )
         
-        # 无限重试直到相机连接成功
+        # 无限重试直到相机连接成功（可被Ctrl+C中断）
         retry_count = 0
-        while True:
+        while not self._is_stopping:
             try:
                 ok = self.camera.connect()
                 if ok and self.camera.healthy:
@@ -167,13 +187,17 @@ class SystemInitializer:
                     # 每10次失败记录一次日志（或首次失败）
                     if self._logger and (retry_count == 1 or retry_count % 10 == 0):
                         self._logger.error(f"✗ 相机连接失败 | 已重试{retry_count}次 | {self._retry_delay}秒后继续...")
-                    time.sleep(self._retry_delay)
+                    # 使用可中断的等待
+                    if self._stop_event.wait(timeout=self._retry_delay):
+                        break  # 收到停止信号
             except Exception as e:
                 retry_count += 1
                 # 每10次失败记录一次日志（或首次失败）
                 if self._logger and (retry_count == 1 or retry_count % 10 == 0):
                     self._logger.error(f"✗ 相机连接异常: {e} | 已重试{retry_count}次 | {self._retry_delay}秒后继续...")
-                time.sleep(self._retry_delay)
+                # 使用可中断的等待
+                if self._stop_event.wait(timeout=self._retry_delay):
+                    break  # 收到停止信号
     
     def _warmup_camera(self):
         """
@@ -358,9 +382,9 @@ class SystemInitializer:
         if self._logger:
             self._logger.info(f"正在加载检测器（关键组件）| 模型: {model_path}")
         
-        # 无限重试直到检测器加载成功
+        # 无限重试直到检测器加载成功（可被Ctrl+C中断）
         retry_count = 0
-        while True:
+        while not self._is_stopping:
             try:
                 self.detector = create_detector(self._cfg, logger=self._logger)
                 self.detector.load()
@@ -385,7 +409,9 @@ class SystemInitializer:
                 if self._logger and (retry_count == 1 or retry_count % 10 == 0):
                     self._logger.error(f"✗ 检测器加载失败: {e} | 已重试{retry_count}次 | {self._retry_delay}秒后继续...")
                 self.detector = None
-                time.sleep(self._retry_delay)
+                # 使用可中断的等待
+                if self._stop_event.wait(timeout=self._retry_delay):
+                    break  # 收到停止信号
     
     def _try_start_mqtt(self):
         """尝试启动MQTT（非关键组件，失败不阻塞）"""
@@ -452,6 +478,16 @@ class SystemInitializer:
             except Exception:
                 self.sftp = None
 
+    def request_stop(self):
+        """
+        请求停止系统（从信号处理器调用）
+        设置停止标志，中断所有阻塞等待
+        """
+        self._is_stopping = True
+        self._stop_event.set()
+        if self._logger:
+            self._logger.info("收到停止请求，正在中断启动流程...")
+    
     def stop(self):
         """
         停止系统并释放所有资源
@@ -462,6 +498,9 @@ class SystemInitializer:
         3. 断开相机连接
         4. 断开SFTP连接
         """
+        self._is_stopping = True
+        self._stop_event.set()
+        
         if self._logger:
             self._logger.info("正在停止系统...")
         

@@ -33,7 +33,8 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
 
 ### 设计理念
 
-- **分层清晰**: 严格的领域驱动设计（DDD），业务逻辑与基础设施分离
+- **分层清晰**: 严格的领域驱动设计（DDD），通讯层、业务逻辑层、服务层完全解耦
+- **关注点分离**: handlers/ 负责业务逻辑，services/comm/ 仅负责通讯协议
 - **多线程架构**: TCP 多客户端并发、MQTT 异步处理、组件独立监控
 - **可测试性**: 模块化设计，支持单元测试和集成测试
 - **可扩展性**: 工厂模式、策略模式，易于添加新功能
@@ -117,34 +118,34 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
 
 ```mermaid
 graph TB
-    subgraph "外部接口层"
+    subgraph "外部接口层 - 通讯服务"
         TCP[TCP Server<br/>多线程并发<br/>Port 8888]
         MQTT[MQTT Client<br/>异步消息<br/>QoS 2]
         SFTP[SFTP Client<br/>文件上传]
     end
     
     subgraph "命令路由层"
-        Router[Command Router<br/>统一命令分发]
-        Router --> |GET_CONFIG| Config[配置管理]
-        Router --> |SAVE_CONFIG| Config
-        Router --> |GET_IMAGE| Camera_Handler[相机处理]
-        Router --> |MODEL_TEST| Detection_Handler[检测处理]
-        Router --> |CATCH| Detection_Handler
-        Router --> |GET_CALIBRAT_IMAGE| Calib_Handler[标定处理]
-        Router --> |COORDINATE_CALIBRATION| Calib_Handler
+        Router[Command Router<br/>统一命令分发<br/>services/comm/]
     end
     
-    subgraph "业务服务层"
-        Camera[SICK Camera<br/>图像采集]
-        Detector[AI Detector<br/>PC/RKNN]
-        Calibrator[Calibrator<br/>坐标标定]
+    subgraph "业务逻辑层 - 命令处理器"
+        Config[Config Handler<br/>配置管理<br/>handlers/]
+        Camera_Handler[Camera Handler<br/>相机处理<br/>handlers/]
+        Detection_Handler[Detection Handler<br/>检测处理<br/>handlers/]
+        Calib_Handler[Calibration Handler<br/>标定处理<br/>handlers/]
+    end
+    
+    subgraph "核心服务层"
+        Camera[SICK Camera<br/>图像采集<br/>services/camera/]
+        Detector[AI Detector<br/>PC/RKNN<br/>services/detection/]
+        Calibrator[Calibrator<br/>坐标标定<br/>services/calibration/]
         Coordinator[Coordinate Processor<br/>坐标转换]
         TargetSelector[Target Selector<br/>目标选择]
         Visualizer[Visualizer<br/>结果可视化]
     end
     
     subgraph "系统管理层（多线程）"
-        Monitor[System Monitor<br/>健康监控主线程]
+        Monitor[System Monitor<br/>健康监控主线程<br/>services/system/]
         Monitor --> |监控线程1| CameraMonitor[相机监控]
         Monitor --> |监控线程2| DetectorMonitor[检测器监控]
         Monitor --> |监控线程3| TCPMonitor[TCP监控]
@@ -154,20 +155,116 @@ graph TB
     
     TCP --> Router
     MQTT --> Router
-    Router --> Camera
-    Router --> Detector
-    Router --> Calibrator
-    Camera --> Coordinator
-    Detector --> TargetSelector
-    TargetSelector --> Visualizer
-    Calibrator --> Camera
+    Router --> |GET_CONFIG/SAVE_CONFIG| Config
+    Router --> |GET_IMAGE| Camera_Handler
+    Router --> |MODEL_TEST/CATCH| Detection_Handler
+    Router --> |GET_CALIBRAT_IMAGE<br/>COORDINATE_CALIBRATION| Calib_Handler
+    
+    Config --> Camera
+    Config --> Detector
+    Camera_Handler --> Camera
+    Camera_Handler --> SFTP
+    Detection_Handler --> Camera
+    Detection_Handler --> Detector
+    Detection_Handler --> TargetSelector
+    Detection_Handler --> Visualizer
+    Detection_Handler --> Coordinator
     Detection_Handler --> SFTP
+    Calib_Handler --> Camera
+    Calib_Handler --> Calibrator
+    Calib_Handler --> SFTP
     
     style TCP fill:#e1f5ff
     style MQTT fill:#e1f5ff
-    style Monitor fill:#fff3e0
     style Router fill:#f3e5f5
+    style Config fill:#fff9c4
+    style Camera_Handler fill:#fff9c4
+    style Detection_Handler fill:#fff9c4
+    style Calib_Handler fill:#fff9c4
+    style Monitor fill:#fff3e0
 ```
+
+---
+
+## 架构设计说明
+
+### 分层架构优势
+
+VisionCore Enterprise Edition 采用清晰的四层架构设计：
+
+#### 1. **领域层 (domain/)**
+- 定义核心业务概念和枚举
+- 独立于技术实现细节
+- 可复用的领域模型
+
+#### 2. **业务逻辑层 (handlers/)**
+- **职责**: 专注于业务逻辑处理，不关心通讯协议
+- **特点**: 
+  - 与通讯层完全解耦
+  - 通过 CommandContext 依赖注入获取服务
+  - 纯函数式命令处理器，易于测试
+- **文件**:
+  - `context.py` - 命令上下文（依赖注入容器）
+  - `config.py` - 配置管理业务逻辑
+  - `camera.py` - 相机操作业务逻辑
+  - `detection.py` - 检测业务逻辑
+  - `calibration.py` - 标定业务逻辑
+
+#### 3. **服务层 (services/)**
+- **通讯服务 (services/comm/)**: 
+  - 仅负责TCP/MQTT协议处理
+  - 命令路由和分发
+  - 不包含业务逻辑
+- **核心服务**: 
+  - 相机服务、检测服务、标定服务
+  - SFTP文件传输服务
+  - 系统监控和日志服务
+- **共享工具**: 
+  - 图像处理、坐标转换等工具类
+
+#### 4. **基础设施层 (infrastructure/)**
+- 第三方SDK封装
+- 硬件驱动适配
+
+### 关注点分离的好处
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  外部请求 (TCP/MQTT)                                     │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  通讯层 (services/comm/)                                 │
+│  - tcp_server.py      处理TCP协议                        │
+│  - mqtt_client.py     处理MQTT协议                       │
+│  - command_router.py  路由命令到handlers                 │
+└────────────────┬────────────────────────────────────────┘
+                 │ 路由
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  业务逻辑层 (handlers/)                                  │
+│  - 不关心是TCP还是MQTT请求                               │
+│  - 专注于业务规则和流程                                   │
+│  - 调用服务层完成具体功能                                 │
+└────────────────┬────────────────────────────────────────┘
+                 │ 调用
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  服务层 (services/)                                      │
+│  - camera/      相机硬件操作                             │
+│  - detection/   AI检测推理                               │
+│  - calibration/ 坐标标定计算                             │
+│  - sftp/        文件上传                                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+**优势**:
+1. **易于测试**: handlers可以独立测试，无需启动TCP/MQTT服务
+2. **易于扩展**: 添加新协议（如WebSocket）只需修改通讯层，无需改动业务逻辑
+3. **代码复用**: 同一个handler可以被TCP、MQTT、REST API等多种协议复用
+4. **职责清晰**: 每层职责明确，降低耦合度
+5. **维护性强**: 修改业务逻辑不影响通讯层，修改通讯协议不影响业务逻辑
 
 ---
 
@@ -248,13 +345,21 @@ VisualCoreEnterpriseEdition/
 │   ├── main.py                            # 主程序入口
 │   └── bootstrap.py                       # 启动引导和依赖注入
 │
-├── domain/                                 # 领域模型层
+├── domain/                                 # 领域模型层（DDD）
 │   ├── enums/                             
 │   │   └── commands.py                    # 命令枚举（VisionCoreCommands）
 │   └── models/                            
 │       └── mqtt.py                        # MQTT响应模型
 │
-├── services/                               # 业务服务层
+├── handlers/                               # 业务逻辑层 - 命令处理器
+│   ├── __init__.py                        
+│   ├── context.py                         # 命令上下文（依赖注入容器）
+│   ├── config.py                          # 配置管理命令处理器
+│   ├── camera.py                          # 相机命令处理器
+│   ├── detection.py                       # 检测命令处理器
+│   └── calibration.py                     # 标定命令处理器
+│
+├── services/                               # 核心服务层
 │   ├── camera/                            # 相机服务
 │   │   ├── sick_camera.py                 # SICK 3D相机实现
 │   │   └── hik_tof.py                     # HIK ToF相机（待集成）
@@ -273,17 +378,11 @@ VisualCoreEnterpriseEdition/
 │   │   ├── black_block_detector.py        # 黑块检测器
 │   │   └── calibrator.py                  # 标定计算器
 │   │
-│   ├── comm/                              # 通信服务
+│   ├── comm/                              # 通信服务（纯通讯层）
 │   │   ├── tcp_server.py                  # TCP服务器（多线程）
 │   │   ├── mqtt_client.py                 # MQTT客户端
 │   │   ├── comm_manager.py                # 通信管理器
-│   │   ├── command_router.py              # 命令路由器
-│   │   └── handlers/                      # 命令处理器
-│   │       ├── calibration.py             
-│   │       ├── camera.py                  
-│   │       ├── config.py                  
-│   │       ├── detection.py               
-│   │       └── context.py                 
+│   │   └── command_router.py              # 命令路由器
 │   │
 │   ├── sftp/                              # SFTP服务
 │   │   └── sftp_client.py                 
@@ -770,20 +869,43 @@ nssm start VisionCoreEE
 class VisionCoreCommands(Enum):
     NEW_COMMAND = "new_command"
 
-# 2. 创建处理器 (services/comm/handlers/your_handler.py)
+# 2. 创建处理器 (handlers/your_handler.py)
+from handlers.context import CommandContext
+from domain.models.mqtt import MQTTResponse
+from domain.enums.commands import MessageType
+
 def handle_new_command(req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
-    return MQTTResponse(
-        command=VisionCoreCommands.NEW_COMMAND.value,
-        component="your_component",
-        messageType=MessageType.SUCCESS,
-        message="success",
-        data={"result": "ok"}
-    )
+    # 访问注入的依赖
+    logger = ctx.logger
+    camera = ctx.camera
+    detector = ctx.detector
+    
+    # 业务逻辑处理
+    try:
+        # ... 你的业务逻辑 ...
+        return MQTTResponse(
+            command=VisionCoreCommands.NEW_COMMAND.value,
+            component="your_component",
+            messageType=MessageType.SUCCESS,
+            message="success",
+            data={"result": "ok"}
+        )
+    except Exception as e:
+        logger.error(f"handle_new_command error: {e}")
+        return MQTTResponse(
+            command=VisionCoreCommands.NEW_COMMAND.value,
+            component="your_component",
+            messageType=MessageType.ERROR,
+            message=str(e),
+            data={}
+        )
 
 # 3. 注册命令 (services/comm/command_router.py)
+from handlers import your_handler
+
 def register_default(self):
     self.register(VisionCoreCommands.NEW_COMMAND.value, 
-                  lambda req: handle_new_command(req, self._ctx))
+                  lambda req: your_handler.handle_new_command(req, self._ctx))
 ```
 
 ### 代码规范
@@ -824,6 +946,32 @@ telnet 192.168.2.99 2122
 ---
 
 ## 更新日志
+
+### v1.2.0 (2025-11-18)
+
+#### 🏗️ 架构重构
+
+- ✅ **分层架构优化**: handlers从services/comm独立为顶层目录
+- ✅ **关注点分离**: 业务逻辑层与通讯层完全解耦
+- ✅ **通讯层纯化**: services/comm仅负责TCP/MQTT协议处理
+- ✅ **可测试性提升**: handlers可独立测试，无需启动通讯服务
+- ✅ **可扩展性增强**: 易于添加新的通讯协议（WebSocket/REST API等）
+
+#### 📂 目录结构变更
+
+```
+之前: services/comm/handlers/  (业务逻辑混在通讯服务中)
+现在: handlers/                (独立的业务逻辑层)
+```
+
+#### 🎯 设计优势
+
+- 📋 **职责清晰**: 通讯层 → 路由层 → 业务逻辑层 → 服务层
+- 🔄 **代码复用**: 同一handler可被多种协议复用
+- 🧪 **易于测试**: 业务逻辑可独立单元测试
+- 🛠️ **易于维护**: 修改通讯协议不影响业务逻辑
+
+---
 
 ### v1.1.0 (2025-11-14)
 

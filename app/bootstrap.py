@@ -67,6 +67,8 @@ class Application:
             print(f"\n收到停止信号 (signal={signum})...")
             self._running = False  # 通知主循环退出
             self._stop_event.set()  # 中断主循环的等待
+            # 同时中断 initializer 中的启动重试循环
+            self.initializer.request_stop()
             # 注意：不在信号处理器中调用 shutdown，而是让主循环自然退出后调用
         
         signal.signal(signal.SIGINT, signal_handler)

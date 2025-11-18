@@ -11,11 +11,11 @@ from typing import Callable, Dict, Any
 import os
 from domain.enums.commands import VisionCoreCommands
 from domain.models.mqtt import MQTTResponse
-from services.comm.handlers.context import CommandContext
-from services.comm.handlers import config as h_config
-from services.comm.handlers import camera as h_camera
-from services.comm.handlers import detection as h_detection
-from services.comm.handlers import calibration as h_calibration
+from handlers.context import CommandContext
+from handlers import config as h_config
+from handlers import camera as h_camera
+from handlers import detection as h_detection
+from handlers import calibration as h_calibration
 
 
 class CommandRouter:

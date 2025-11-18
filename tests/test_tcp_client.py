@@ -210,14 +210,14 @@ def auto_test_mode():
     print("TCP 客户端测试工具 - 自动测试模式")
     print("="*60 + "\n")
     
-    client = TCPTestClient(host="192.168.2.126", port=8888)
+    client = TCPTestClient(host="192.168.2.90", port=8888)
     
     if not client.connect():
         return
     
     try:
         # 测试 catch 命令
-        client.test_catch_command(count=5, interval=0.5)
+        client.test_catch_command(count=1000, interval=0.5)
         
     except KeyboardInterrupt:
         print("\n\n检测到 Ctrl+C，停止测试...")
