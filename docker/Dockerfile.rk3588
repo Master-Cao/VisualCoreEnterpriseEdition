@@ -1,0 +1,68 @@
+# RK3588专用Dockerfile
+# 使用ARM64架构的Python 3.10镜像
+FROM arm64v8/python:3.10-slim-bullseye
+
+# 维护者信息
+LABEL maintainer="VisionCore Team"
+LABEL description="VisionCore Enterprise Edition for RK3588"
+LABEL platform="RK3588/ARM64"
+
+# 设置工作目录
+WORKDIR /app
+
+# 安装系统依赖
+# RK3588需要额外的库支持NPU和OpenCV
+RUN apt-get update && apt-get install -y \
+    # OpenCV依赖
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    # 网络工具（调试用）
+    iputils-ping \
+    net-tools \
+    # 清理缓存
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制RKNN wheel文件
+COPY ../scripts/rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl /tmp/
+
+# 复制精简版requirements文件
+COPY requirements-rk3588.txt .
+
+# 安装Python依赖
+# 先安装RKNN toolkit2
+RUN pip install --no-cache-dir /tmp/rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl && \
+    rm /tmp/rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+
+# 安装其他依赖（不包含torch/torchvision）
+RUN pip install --no-cache-dir -r requirements-rk3588.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 复制应用代码
+COPY ../app/ ./app/
+COPY ../domain/ ./domain/
+COPY ../handlers/ ./handlers/
+COPY ../services/ ./services/
+COPY ../infrastructure/ ./infrastructure/
+
+# 创建必要的目录
+RUN mkdir -p /app/configs /app/models /app/logs /app/debug
+
+# 暴露端口
+EXPOSE 8888
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+# RK3588特定环境变量
+ENV RKNN_PLATFORM=RK3588
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8888)); s.close()" || exit 1
+
+# 启动命令
+CMD ["python", "-m", "app.main"]
+

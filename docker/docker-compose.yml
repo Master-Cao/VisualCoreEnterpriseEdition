@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  visioncore:
+    image: visioncore-ee:latest
+    container_name: visioncore_enterprise
+    restart: unless-stopped
+    
+    # 网络模式 - host模式可以直接访问宿主机网络（方便访问相机）
+    network_mode: host
+    
+    # 或者使用桥接模式并映射端口
+    # ports:
+    #   - "8888:8888"    # TCP服务器
+    
+    # 挂载配置和数据
+    volumes:
+      # 配置文件
+      - ../configs:/app/configs
+      # AI模型文件
+      - ../models:/app/models
+      # 日志输出
+      - ../logs:/app/logs
+      # 调试输出
+      - ../debug:/app/debug
+    
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=INFO
+    
+    # 资源限制（可选）
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+

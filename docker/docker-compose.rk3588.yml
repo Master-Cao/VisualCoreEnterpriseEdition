@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  visioncore-rk3588:
+    image: visioncore-ee:rk3588
+    container_name: visioncore_rk3588
+    restart: unless-stopped
+    
+    # 使用host网络模式（推荐，方便访问相机和NPU）
+    network_mode: host
+    
+    # 权限和设备访问
+    # RK3588 NPU需要特权模式访问硬件
+    privileged: true
+    
+    # 挂载配置和数据
+    volumes:
+      # 配置文件
+      - ../configs:/app/configs
+      # AI模型文件（RKNN格式）
+      - ../models:/app/models
+      # 日志输出
+      - ../logs:/app/logs
+      # 调试输出
+      - ../debug:/app/debug
+      # NPU驱动设备（重要！）
+      - /dev:/dev
+    
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=INFO
+      - RKNN_PLATFORM=RK3588
+    
+    # 资源限制（根据实际情况调整）
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+

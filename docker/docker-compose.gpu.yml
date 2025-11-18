@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  visioncore-gpu:
+    image: visioncore-ee:gpu
+    container_name: visioncore_enterprise_gpu
+    restart: unless-stopped
+    
+    # 网络模式
+    network_mode: host
+    
+    # 挂载配置和数据
+    volumes:
+      - ../configs:/app/configs
+      - ../models:/app/models
+      - ../logs:/app/logs
+      - ../debug:/app/debug
+    
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - LOG_LEVEL=INFO
+      - CUDA_VISIBLE_DEVICES=0
+    
+    # GPU支持（需要安装nvidia-docker）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 6G
+        reservations:
+          memory: 4G
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+

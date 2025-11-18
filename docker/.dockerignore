@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 日志和调试文件
+logs/
+debug/
+*.log
+
+# IDE和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# 文档（不需要在镜像中）
+docs/
+README.md
+*.md
+
+# 测试文件
+tests/
+test_*.py
+*_test.py
+
+# 配置备份（不需要）
+configs/config_backup/
+configs/transformation_matrix_backup/
+configs/*.backup*
+
+# 临时文件
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Docker自身文件
+docker/
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# 开发环境
+venv/
+env/
+ENV/
+.venv
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# 其他
+*.bak
+*.swp
+*~
+
