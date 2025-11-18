@@ -8,6 +8,9 @@ XY使用仿射变换，Z使用线性映射，合成4x4变换矩阵
 """
 
 import json
+import os
+import glob
+import shutil
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -133,9 +136,10 @@ def save_transformation_matrix(path: Path,
                                A2x3: Optional[np.ndarray] = None,
                                alpha: Optional[float] = None,
                                beta: Optional[float] = None,
-                               metadata: Optional[Dict[str, Any]] = None) -> None:
+                               metadata: Optional[Dict[str, Any]] = None,
+                               max_backups: int = 10) -> None:
     """
-    保存变换矩阵到JSON文件
+    保存变换矩阵到JSON文件（带自动备份）
     
     Args:
         path: 输出文件路径
@@ -144,7 +148,35 @@ def save_transformation_matrix(path: Path,
         alpha: Z线性系数（可选，用于兼容）
         beta: Z线性偏移（可选，用于兼容）
         metadata: 额外的元数据
+        max_backups: 最大保留备份数量（默认10个）
     """
+    # 1. 备份现有文件（如果存在）
+    if path.exists():
+        try:
+            # 创建带时间戳的备份文件
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = Path(str(path) + f".backup_{ts}")
+            shutil.copy2(path, backup_path)
+            
+            # 清理旧的备份文件，只保留最新的 max_backups 个
+            backup_pattern = str(path) + ".backup_*"
+            backup_files = sorted(
+                glob.glob(backup_pattern), 
+                key=lambda p: os.path.getmtime(p), 
+                reverse=True
+            )
+            
+            # 删除超过限制数量的旧备份
+            for old_backup in backup_files[max_backups:]:
+                try:
+                    os.remove(old_backup)
+                except Exception:
+                    pass  # 忽略删除失败的情况
+                    
+        except Exception:
+            pass  # 备份失败不影响保存流程
+    
+    # 2. 准备保存数据
     data = {
         'matrix': matrix_4x4.tolist(),
         'calibration_datetime': datetime.now().isoformat(),
@@ -162,7 +194,7 @@ def save_transformation_matrix(path: Path,
     if metadata:
         data.update(metadata)
     
-    # 保存到文件
+    # 3. 保存到文件
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

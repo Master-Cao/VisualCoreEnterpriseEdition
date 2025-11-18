@@ -306,23 +306,26 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
     - 客户端已通过 get_calibrat_image 获取世界坐标
     - 用户已使用机器人示教器记录对应的机器人坐标
     
-    Payload格式:
+    Payload格式 (新格式):
     {
-        "world_points": [
-            {"x": xw1, "y": yw1, "z": zw1},
-            {"x": xw2, "y": yw2, "z": zw2},
+        "calibration_points": [
+            {
+                "pixel_u": u1, "pixel_v": v1,
+                "world_x": xw1, "world_y": yw1,
+                "robot_x": xr1, "robot_y": yr1
+            },
             ...
         ],
-        "robot_points": [
-            {"x": xr1, "y": yr1, "z": zr1},
-            {"x": xr2, "y": yr2, "z": zr2},
-            ...
+        "z_axis_mappings": [
+            {"camera_height": h1, "robot_z": z1},
+            {"camera_height": h2, "robot_z": z2}
         ]
     }
     
-    或简化格式（world_points从上次get_calibrat_image缓存获取）:
+    或旧格式（兼容）:
     {
-        "robot_points": [...]
+        "world_points": [{"x": xw1, "y": yw1, "z": zw1}, ...],
+        "robot_points": [{"x": xr1, "y": yr1, "z": zr1}, ...]
     }
     
     功能:
@@ -340,64 +343,138 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
         # 1. 解析payload
         payload_data = req.data if isinstance(req.data, dict) else {}
         
-        world_points_raw = payload_data.get('world_points', [])
-        robot_points_raw = payload_data.get('robot_points', [])
+        # 检测消息格式（新格式优先）
+        calibration_points = payload_data.get('calibration_points', [])
+        z_axis_mappings = payload_data.get('z_axis_mappings', [])
         
-        if not robot_points_raw:
-            return MQTTResponse(
-                command=VisionCoreCommands.COORDINATE_CALIBRATION.value,
-                component="calibrator",
-                messageType=MessageType.ERROR,
-                message="missing_robot_points",
-                data={"hint": "payload中必须包含robot_points字段"}
-            )
-        
-        # 2. 如果没有world_points，返回错误（需要先调用get_calibrat_image）
-        if not world_points_raw:
-            return MQTTResponse(
-                command=VisionCoreCommands.COORDINATE_CALIBRATION.value,
-                component="calibrator",
-                messageType=MessageType.ERROR,
-                message="missing_world_points",
-                data={"hint": "payload中必须包含world_points字段（从get_calibrat_image获取）"}
-            )
-        
-        # 3. 解析坐标点
-        world_points = []
-        for wp in world_points_raw:
-            if isinstance(wp, dict):
-                try:
-                    world_points.append((
-                        float(wp.get('x', 0)),
-                        float(wp.get('y', 0)),
-                        float(wp.get('z', 0))
-                    ))
-                except (ValueError, TypeError):
-                    world_points.append(None)
-            else:
-                world_points.append(None)
-        
-        robot_points = []
-        for rp in robot_points_raw:
-            if isinstance(rp, dict):
-                try:
-                    robot_points.append((
-                        float(rp.get('x', 0)),
-                        float(rp.get('y', 0)),
-                        float(rp.get('z', 0))
-                    ))
-                except (ValueError, TypeError):
-                    robot_points.append(None)
-            else:
-                robot_points.append(None)
-        
-        # 4. 过滤有效点对
         world_valid = []
         robot_valid = []
-        for i in range(min(len(world_points), len(robot_points))):
-            if world_points[i] is not None and robot_points[i] is not None:
-                world_valid.append(world_points[i])
-                robot_valid.append(robot_points[i])
+        
+        # 2. 如果是新格式（包含calibration_points）
+        if calibration_points:
+            if logger:
+                logger.info(f"检测到新格式标定数据，共 {len(calibration_points)} 个标定点")
+            
+            # 解析标定点（XY平面）
+            for i, point in enumerate(calibration_points):
+                if not isinstance(point, dict):
+                    continue
+                
+                try:
+                    world_x = float(point.get('world_x', 0))
+                    world_y = float(point.get('world_y', 0))
+                    robot_x = float(point.get('robot_x', 0))
+                    robot_y = float(point.get('robot_y', 0))
+                    
+                    # 使用默认Z值0（后续会通过z_axis_mappings处理Z轴）
+                    world_valid.append((world_x, world_y, 0.0))
+                    robot_valid.append((robot_x, robot_y, 0.0))
+                    
+                    if logger:
+                        logger.debug(
+                            f"点{i+1}: world=({world_x:.2f}, {world_y:.2f}) -> "
+                            f"robot=({robot_x:.2f}, {robot_y:.2f})"
+                        )
+                except (ValueError, TypeError) as e:
+                    if logger:
+                        logger.warning(f"解析标定点{i+1}失败: {e}")
+                    continue
+            
+            # 处理Z轴映射（如果提供）
+            if z_axis_mappings and len(z_axis_mappings) >= 2:
+                if logger:
+                    logger.info(f"检测到Z轴映射数据，共 {len(z_axis_mappings)} 个映射点")
+                
+                # 提取Z轴映射点用于标定
+                z_world_points = []
+                z_robot_points = []
+                for i, mapping in enumerate(z_axis_mappings):
+                    if not isinstance(mapping, dict):
+                        continue
+                    try:
+                        camera_height = float(mapping.get('camera_height', 0))
+                        robot_z = float(mapping.get('robot_z', 0))
+                        
+                        # 使用(0, 0, camera_height)作为世界坐标
+                        z_world_points.append((0.0, 0.0, camera_height))
+                        z_robot_points.append((0.0, 0.0, robot_z))
+                        
+                        if logger:
+                            logger.debug(f"Z轴映射{i+1}: camera_height={camera_height} -> robot_z={robot_z}")
+                    except (ValueError, TypeError) as e:
+                        if logger:
+                            logger.warning(f"解析Z轴映射{i+1}失败: {e}")
+                        continue
+                
+                # 将Z轴映射点添加到标定数据中
+                if z_world_points and z_robot_points:
+                    world_valid.extend(z_world_points)
+                    robot_valid.extend(z_robot_points)
+                    if logger:
+                        logger.info(f"已添加 {len(z_world_points)} 个Z轴映射点到标定数据")
+        
+        # 3. 否则尝试旧格式（兼容性）
+        else:
+            world_points_raw = payload_data.get('world_points', [])
+            robot_points_raw = payload_data.get('robot_points', [])
+            
+            if not robot_points_raw:
+                return MQTTResponse(
+                    command=VisionCoreCommands.COORDINATE_CALIBRATION.value,
+                    component="calibrator",
+                    messageType=MessageType.ERROR,
+                    message="missing_calibration_data",
+                    data={"hint": "payload中必须包含calibration_points字段或robot_points字段"}
+                )
+            
+            if not world_points_raw:
+                return MQTTResponse(
+                    command=VisionCoreCommands.COORDINATE_CALIBRATION.value,
+                    component="calibrator",
+                    messageType=MessageType.ERROR,
+                    message="missing_world_points",
+                    data={"hint": "payload中必须包含calibration_points字段或world_points字段"}
+                )
+            
+            if logger:
+                logger.info(f"检测到旧格式标定数据")
+            
+            # 解析坐标点
+            world_points = []
+            for wp in world_points_raw:
+                if isinstance(wp, dict):
+                    try:
+                        world_points.append((
+                            float(wp.get('x', 0)),
+                            float(wp.get('y', 0)),
+                            float(wp.get('z', 0))
+                        ))
+                    except (ValueError, TypeError):
+                        world_points.append(None)
+                else:
+                    world_points.append(None)
+            
+            robot_points = []
+            for rp in robot_points_raw:
+                if isinstance(rp, dict):
+                    try:
+                        robot_points.append((
+                            float(rp.get('x', 0)),
+                            float(rp.get('y', 0)),
+                            float(rp.get('z', 0))
+                        ))
+                    except (ValueError, TypeError):
+                        robot_points.append(None)
+                else:
+                    robot_points.append(None)
+            
+            # 过滤有效点对
+            for i in range(min(len(world_points), len(robot_points))):
+                if world_points[i] is not None and robot_points[i] is not None:
+                    world_valid.append(world_points[i])
+                    robot_valid.append(robot_points[i])
+        
+        # 4. 检查有效点数
         
         if len(world_valid) < 3:
             return MQTTResponse(
@@ -412,13 +489,23 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
                 }
             )
         
-        # 5. 执行标定（仅XY平面，Z轴使用单位映射）
+        if logger:
+            logger.info(f"准备执行标定，共 {len(world_valid)} 个有效点对")
+        
+        # 5. 决定是否启用Z轴标定
+        # 如果有z_axis_mappings数据且至少有2个映射点，则启用Z轴标定
+        calibrate_z = bool(z_axis_mappings and len(z_axis_mappings) >= 2)
+        
+        # 6. 执行标定
         output_path = Path(ctx.project_root) / "configs" / "transformation_matrix.json"
         
         try:
-            result = calibrate_from_points(world_valid, robot_valid, output_path, calibrate_z=False)
+            result = calibrate_from_points(world_valid, robot_valid, output_path, calibrate_z=calibrate_z)
             if logger:
-                logger.info("标定模式: 仅XY平面仿射变换，Z轴保持单位映射（z_robot = z_world）")
+                if calibrate_z:
+                    logger.info("标定模式: XY平面仿射变换 + Z轴线性映射")
+                else:
+                    logger.info("标定模式: 仅XY平面仿射变换，Z轴保持单位映射（z_robot = z_world）")
         except Exception as calib_err:
             if logger:
                 logger.error(f"标定计算失败: {calib_err}")
@@ -430,7 +517,7 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
                 data={"error": str(calib_err)}
             )
         
-        # 6. 提取结果
+        # 7. 提取结果
         metadata = result['metadata']
         
         if logger:
@@ -450,7 +537,7 @@ def handle_coordinate_calibration(req: MQTTResponse, ctx: CommandContext) -> MQT
                     f"总体2D_RMSE={metadata['overall_rmse_2d']:.2f}mm"
                 )
         
-        # 7. 返回成功结果
+        # 8. 返回成功结果
         return MQTTResponse(
             command=VisionCoreCommands.COORDINATE_CALIBRATION.value,
             component="calibrator",
