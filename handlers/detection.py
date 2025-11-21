@@ -334,9 +334,15 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             except Exception:
                 pass
         
-        # 统计各ROI中的目标数量（通过中点判断）
-        p1_count = 0
-        p2_count = 0
+        # 统计各ROI中的目标数量（通过中点判断 + 深度阈值递增计数）
+        # 逻辑：p_count = ROI内物体总数（基数） + 所有物体的深度增量总和
+        # 例如：P1 ROI有3个物体，深度增量分别为1,2,0 → p1_count = 3 + 1 + 2 + 0 = 6
+        p1_base_count = 0  # P1 ROI内物体基数
+        p2_base_count = 0  # P2 ROI内物体基数
+        p1_depth_increment = 0  # P1 ROI深度增量总和
+        p2_depth_increment = 0  # P2 ROI深度增量总和
+        roi_depth_threshold = float(roi_cfg.get('depthThreshold', 0))
+        
         for det_box in seasoning_detections:
             xmin = float(getattr(det_box, 'xmin', 0))
             ymin = float(getattr(det_box, 'ymin', 0))
@@ -345,26 +351,74 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             center_x = 0.5 * (xmin + xmax)
             center_y = 0.5 * (ymin + ymax)
             
-            # 遍历roi_list统计
+            # 遍历roi_list，找到所属ROI（按中点判断）
+            matched_roi = None
             for roi in roi_list:
                 if RoiProcessor.is_point_in_roi(center_x, center_y, roi):
-                    priority = roi.get('priority', 999)
-                    if priority == 1:
-                        p1_count += 1
-                    elif priority == 2:
-                        p2_count += 1
-                    break  # 只计入第一个匹配的ROI
+                    matched_roi = roi
+                    break
+            
+            if matched_roi is None:
+                continue
+            
+            priority = matched_roi.get('priority', 999)
+            
+            # 累加基数（物体数量）
+            if priority == 1:
+                p1_base_count += 1
+            elif priority == 2:
+                p2_base_count += 1
+            
+            # 若存在深度与相机参数，则计算深度增量
+            if depth_data is None or camera_params is None:
+                continue
+            
+            # 计算物体中心的世界坐标
+            coord_info = None
+            try:
+                coord_info = CoordinateProcessor.calculate_coordinate_for_detection(
+                    det_box,
+                    depth_data,
+                    camera_params,
+                    None  # 只需要世界坐标，不需要机器人坐标
+                )
+            except Exception as e:
+                if logger:
+                    logger.warning(f"计算物体坐标失败: {e}")
+                coord_info = None
+            
+            if not coord_info or 'camera_3d' not in coord_info or not coord_info['camera_3d']:
+                continue
+            
+            # 提取世界坐标Z值
+            world_xyz = coord_info['camera_3d']
+            world_z = float(world_xyz[2])
+            
+            # 计算深度差值：depthThreshold - world_z
+            delta = roi_depth_threshold - world_z
+            
+            # 深度增量：每小于阈值10个单位+1
+            increments = int(delta // 10.0) if delta >= 10.0 else 0
+            
+            if priority == 1:
+                p1_depth_increment += increments
+                if logger:
+                    logger.debug(f"P1 ROI目标: world_z={world_z:.2f}, delta={delta:.2f}, 深度增量+{increments}")
+            elif priority == 2:
+                p2_depth_increment += increments
+                if logger:
+                    logger.debug(f"P2 ROI目标: world_z={world_z:.2f}, delta={delta:.2f}, 深度增量+{increments}")
         
-        # 判断目标在哪个ROI中（用于TCP响应）
-        in_p1roi = 0
-        in_p2roi = 0
+        # 计算最终计数：基数 + 深度增量
+        p1_count = p1_base_count + p1_depth_increment
+        p2_count = p2_base_count + p2_depth_increment
         
-        if best_target:
-            roi_priority = best_target.get('roi_priority', 999)
-            if roi_priority == 1:
-                in_p1roi = 1
-            elif roi_priority == 2:
-                in_p2roi = 1
+        if logger:
+            logger.info(f"P1 ROI计数: 基数={p1_base_count}, 深度增量={p1_depth_increment}, 总计={p1_count}")
+            logger.info(f"P2 ROI计数: 基数={p2_base_count}, 深度增量={p2_depth_increment}, 总计={p2_count}")
+        
+        in_p1roi = p1_count
+        in_p2roi = p2_count
         
         # 初始化响应字符串（默认无目标）
         tcp_response = "0,0,0,0,0"

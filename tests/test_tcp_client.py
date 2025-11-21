@@ -210,7 +210,7 @@ def auto_test_mode():
     print("TCP 客户端测试工具 - 自动测试模式")
     print("="*60 + "\n")
     
-    client = TCPTestClient(host="192.168.2.90", port=8888)
+    client = TCPTestClient(host="192.168.2.100", port=8888)
     
     if not client.connect():
         return
