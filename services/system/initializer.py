@@ -8,6 +8,10 @@ import threading
 from services.comm.command_router import CommandRouter
 from services.comm.comm_manager import CommManager
 from services.camera.sick_camera import SickCamera
+try:
+    from services.camera.cpp_camera import CppCamera
+except Exception:
+    CppCamera = None
 from services.detection.factory import create_detector
 from services.sftp.sftp_client import SftpClient
 from .monitor import SystemMonitor
@@ -155,14 +159,55 @@ class SystemInitializer:
         auth_cfg = (cam_cfg.get("auth") or {})
         login_attempts = auth_cfg.get("loginAttempts")
         
-        # 创建相机实例
-        self.camera = SickCamera(
-            ip=ip,
-            port=port,
-            use_single_step=use_single,
-            logger=self._logger,
-            login_attempts=login_attempts,
-        )
+        # 默认使用cpp后端，除非明确配置为sick或cpp不可用
+        backend = str(cam_cfg.get("backend", "cpp")).strip().lower()
+        
+        # 优先使用CppCamera（性能更好）
+        if backend == "cpp" and CppCamera is not None:
+            self.camera = CppCamera(
+                ip=ip,
+                port=port,
+                use_single_step=use_single,
+                logger=self._logger,
+                login_attempts=login_attempts,
+            )
+            if self._logger:
+                self._logger.info("使用 C++ 相机后端（高性能模式）")
+        elif backend == "sick" or CppCamera is None:
+            self.camera = SickCamera(
+                ip=ip,
+                port=port,
+                use_single_step=use_single,
+                logger=self._logger,
+                login_attempts=login_attempts,
+            )
+            if self._logger:
+                if CppCamera is None:
+                    self._logger.warning("C++ 相机模块不可用，回退到 Python 后端")
+                else:
+                    self._logger.info("使用 Python 相机后端（配置指定）")
+        else:
+            # 无效的backend配置，默认使用cpp或回退到sick
+            if CppCamera is not None:
+                self.camera = CppCamera(
+                    ip=ip,
+                    port=port,
+                    use_single_step=use_single,
+                    logger=self._logger,
+                    login_attempts=login_attempts,
+                )
+                if self._logger:
+                    self._logger.warning(f"未知的相机后端配置 '{backend}'，使用 C++ 后端")
+            else:
+                self.camera = SickCamera(
+                    ip=ip,
+                    port=port,
+                    use_single_step=use_single,
+                    logger=self._logger,
+                    login_attempts=login_attempts,
+                )
+                if self._logger:
+                    self._logger.warning(f"未知的相机后端配置 '{backend}'，且 C++ 模块不可用，使用 Python 后端")
         
         # 无限重试直到相机连接成功（可被Ctrl+C中断）
         retry_count = 0

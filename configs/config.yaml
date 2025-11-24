@@ -15,6 +15,7 @@ board_mode:
     failure_threshold: 1
 camera:
   enable: true
+  # backend: cpp  # 默认使用cpp后端（高性能），可选: cpp | sick
   connection:
     ip: 192.168.2.99
     port: 2122

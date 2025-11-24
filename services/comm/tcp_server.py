@@ -133,6 +133,16 @@ class TcpServer:
                     client_sock, addr = self._server_sock.accept()
                 except socket.timeout:
                     continue
+                
+                # 设置 TCP_NODELAY，禁用 Nagle 算法，立即发送数据（避免延迟）
+                try:
+                    client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    if self._logger:
+                        self._logger.debug(f"为客户端 {addr} 设置 TCP_NODELAY")
+                except Exception as e:
+                    if self._logger:
+                        self._logger.warning(f"设置 TCP_NODELAY 失败: {e}")
+                
                 cid = f"{addr[0]}:{addr[1]}:{int(time.time())}"
                 info = _ClientInfo(
                     socket=client_sock,
