@@ -43,7 +43,7 @@ DetectionServer:
   connection_timeout: 300
   heartbeat_interval: 30
 mqtt:
-  enable: true
+  enable: false
   connection:
     broker_host: 192.168.2.126
     broker_port: 1883
@@ -70,13 +70,13 @@ roi:
     priority: 1
   - name: backup_area
     shape: rectangle
-    width: 130
+    width: 150
     height: 100
-    offsetx: 100
+    offsetx: 90
     offsety: 140
     priority: 2
 sftp:
-  enable: true
+  enable: false
   host: 192.168.2.126
   port: 22
   username: qt
