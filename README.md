@@ -55,13 +55,20 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
 ### 🎥 多相机支持
 
 - **SICK 3D相机**: 完整的 SICK SDK 集成，支持深度图像、强度图像和相机参数获取
+- **C++ 相机接口**: 高性能C++封装，支持帧号验证和自动重试
+- **HIK ToF相机**: 支持海康威视ToF 3D相机（待完整集成）
 - **自动重连**: 断线自动重连机制，保证系统稳定性
 - **预热机制**: 首次取图预热，减少实际检测延迟
+- **帧号验证**: 自动检测并重试旧帧复用问题（特别针对ARM平台优化）
 
 ### 🧠 AI 检测引擎
 
 - **Ultralytics YOLO**: PC端高性能检测（支持分割模型）
 - **RKNN 推理**: 嵌入式平台加速（RK3588/RK3566等）
+- **C++ 高性能后端**: 
+  - C++实现的相机接口和检测器（更快的推理速度）
+  - 支持PC和RKNN双平台
+  - 自动回退机制（C++不可用时降级到Python实现）
 - **工厂模式**: 自动选择最优后端（PC/RKNN/Auto）
 - **灵活配置**: 置信度、NMS阈值可调
 - **预热推理**: 模型加载后预热推理，避免首次检测延迟
@@ -89,6 +96,13 @@ VisionCore Enterprise Edition 是对原有 VisionCore 系统的**工程化重构
   2. `coordinate_calibration` - 接收机器人坐标并执行标定
 - **XY仿射 + Z线性**: 分离的变换模型，适合工业场景
 - **精度验证**: 自动计算 RMSE，质量评级（优秀/良好/合格/需改进）
+
+### 🤖 智能遮挡检测
+
+- **时间间隔检测**: 基于TCP请求间隔判断机器人动作
+- **智能忽略机制**: 机器人执行抓取动作期间自动忽略N次检测
+- **防止误触发**: 避免机器人动作期间误触发皮带移动信号
+- **可配置参数**: 间隔阈值和忽略次数可灵活配置
 
 ### 🔧 系统管理（多线程监控）
 
@@ -361,14 +375,17 @@ VisualCoreEnterpriseEdition/
 │
 ├── services/                               # 核心服务层
 │   ├── camera/                            # 相机服务
-│   │   ├── sick_camera.py                 # SICK 3D相机实现
-│   │   └── hik_tof.py                     # HIK ToF相机（待集成）
+│   │   ├── sick_camera.py                 # SICK 3D相机（Python实现）
+│   │   ├── cpp_camera.py                  # SICK 3D相机（C++封装）
+│   │   ├── hik_tof.py                     # HIK ToF相机（待集成）
+│   │   └── vc_camera_cpp.pyd              # C++相机模块（编译后）
 │   │
 │   ├── detection/                         # 检测服务
 │   │   ├── base.py                        # 检测器接口
 │   │   ├── factory.py                     # 检测器工厂
 │   │   ├── pc_ultralytics.py             # PC端Ultralytics检测器
-│   │   ├── rknn_backend.py               # RKNN推理后端
+│   │   ├── rknn_backend.py               # RKNN推理后端（Python）
+│   │   ├── cpp_backend.py                 # RKNN推理后端（C++封装）
 │   │   ├── coordinate_processor.py        # 坐标处理器
 │   │   ├── target_selector.py             # 目标选择器
 │   │   ├── visualizer.py                  # 可视化工具
@@ -377,6 +394,12 @@ VisualCoreEnterpriseEdition/
 │   ├── calibration/                       # 标定服务
 │   │   ├── black_block_detector.py        # 黑块检测器
 │   │   └── calibrator.py                  # 标定计算器
+│   │
+│   ├── cpp/                               # C++模块构建系统
+│   │   ├── camera/                        # 相机C++源码
+│   │   ├── detection/                     # 检测C++源码
+│   │   ├── build/                         # CMake构建目录
+│   │   └── dist/                          # 编译产物（.pyd/.so）
 │   │
 │   ├── comm/                              # 通信服务（纯通讯层）
 │   │   ├── tcp_server.py                  # TCP服务器（多线程）
@@ -531,8 +554,10 @@ result = calibrate_from_points(
 |------|------|----------|------|
 | `catch` | 执行单次检测 | `p1_flag,p2_flag,x,y,z` | `1,0,123.456,78.901,-45.123` |
 
-**错误码**:
+**返回说明**:
+- `1,0,123.456,78.901,-45.123`: 检测到目标（p1=1, p2=0, x, y, z坐标）
 - `0,0,0,0,0`: 未检测到目标
+- `-1,0,0,0,0`: 机器人遮挡（正在执行抓取动作）
 - `E1,0,0,0,0`: 相机/检测器未就绪
 - `E2,0,0,0,0`: 检测频率过高（防抖机制）
 - `E3,0,0,0,0`: 正在处理中（并发控制）
@@ -591,6 +616,7 @@ board_mode:
 # 相机配置
 camera:
   enable: true
+  # backend: cpp           # 可选：cpp（高性能）| sick（Python实现）
   connection:
     ip: 192.168.2.99
     port: 2122
@@ -601,14 +627,18 @@ camera:
     loginAttempts:
       - level: service
         password: '123456'
+      - level: client
+        password: CLIENT
 
 # 检测模型
 model:
   backend: auto            # pc | rknn | auto
-  model_name: seg-seasoning2.pt
-  path: models/seg-seasoning2.pt
-  conf_threshold: 0.5
-  nms_threshold: 0.45
+  use_cpp: true            # 启用C++后端（RKNN模式下提供更高性能）
+  model_name: seasoning_11.18.pt
+  path: models/seasoning_11.18.pt
+  conf_threshold: 0.7
+  nms_threshold: 0.6
+  target: rk3588           # RKNN目标平台（rk3588/rk3566等）
 
 # TCP服务器（多线程）
 DetectionServer:
@@ -639,21 +669,26 @@ mqtt:
 # ROI配置（多ROI优先级）
 roi:
   enable: true
-  minArea: 2500
+  minArea: 3000
+  depthThreshold: 665      # 深度阈值（mm），用于过滤过深的目标
+  # 机器人遮挡检测配置
+  occlusion:
+    intervalThreshold: 700 # TCP间隔阈值（ms），超过此值视为机器人正在执行抓取
+    ignoreCount: 3         # 检测到间隔超过阈值后，接下来忽略的检测次数
   regions:
     - name: main_work_area
       shape: rectangle
-      width: 256
-      height: 80
+      width: 150
+      height: 100
       offsetx: 0
-      offsety: 60
+      offsety: 30
       priority: 1          # 优先级最高
     - name: backup_area
       shape: rectangle
-      width: 256
-      height: 80
-      offsetx: 0
-      offsety: 146
+      width: 150
+      height: 100
+      offsetx: 90
+      offsety: 140
       priority: 2          # 优先级次之
 
 # SFTP配置
@@ -946,6 +981,34 @@ telnet 192.168.2.99 2122
 ---
 
 ## 更新日志
+
+### v1.3.0 (2025-11-26)
+
+#### 🚀 性能优化
+
+- ✅ **C++高性能后端**: 
+  - C++实现的相机接口（VisionaryCamera），显著提升取图速度
+  - C++实现的RKNN检测器，更快的推理性能
+  - 自动回退机制：C++不可用时自动降级到Python实现
+- ✅ **帧号验证**: ARM平台上的旧帧复用自动检测和重试
+- ✅ **深度阈值过滤**: 添加depthThreshold配置，过滤过深的检测目标
+
+#### 🤖 智能功能
+
+- ✅ **遮挡检测**: 
+  - 基于TCP请求间隔的智能遮挡检测
+  - 机器人执行抓取动作期间自动忽略检测
+  - 防止误触发皮带移动信号
+  - 可配置的间隔阈值和忽略次数
+- ✅ **ROI优化**: 支持深度阈值和多区域优先级配置
+
+#### 🛠️ 系统改进
+
+- ✅ **配置优化**: 相机和检测器支持backend配置选项
+- ✅ **错误处理**: 完善的C++模块导入错误处理
+- ✅ **日志优化**: 更详细的帧号和时间戳日志
+
+---
 
 ### v1.2.0 (2025-11-18)
 
