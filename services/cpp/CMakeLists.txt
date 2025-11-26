@@ -1,37 +1,52 @@
 cmake_minimum_required(VERSION 3.16)
-project(vc_camera_cpp LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(Python3_ROOT_DIR "C:/ProgramData/miniconda3/envs/sick")
-set(Python3_EXECUTABLE "C:/ProgramData/miniconda3/envs/sick/python.exe")
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
-set(pybind11_DIR "C:/ProgramData/miniconda3/envs/sick/lib/site-packages/pybind11/share/cmake/pybind11")
-find_package(pybind11 REQUIRED CONFIG)
-file(GLOB SICK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../infrastructure/sick_visionary_cpp_shared/src/*.cpp")
-add_library(vc_camera_cpp_module MODULE bindings.cpp VisionaryCameraLib.cpp ${SICK_SRC})
-target_include_directories(vc_camera_cpp_module PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../infrastructure/sick_visionary_cpp_shared/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../infrastructure/sick_visionary_cpp_shared/3pp
-)
-target_link_libraries(vc_camera_cpp_module PRIVATE pybind11::module)
-set_target_properties(vc_camera_cpp_module PROPERTIES PREFIX "" OUTPUT_NAME "vc_camera_cpp")
-if (WIN32)
-  set_target_properties(vc_camera_cpp_module PROPERTIES SUFFIX ".pyd")
-endif()
+project(VisualCoreEnterpriseEdition_CPP LANGUAGES CXX)
 
-# Explicit output directory to make artifact easier to find
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 设置通用输出目录
 set(VC_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist")
 file(MAKE_DIRECTORY ${VC_OUT_DIR})
-set_target_properties(vc_camera_cpp_module PROPERTIES 
-  RUNTIME_OUTPUT_DIRECTORY ${VC_OUT_DIR}
-  LIBRARY_OUTPUT_DIRECTORY ${VC_OUT_DIR}
-  ARCHIVE_OUTPUT_DIRECTORY ${VC_OUT_DIR}
-)
 
-install(TARGETS vc_camera_cpp_module 
-  RUNTIME DESTINATION ${VC_OUT_DIR}
-  LIBRARY DESTINATION ${VC_OUT_DIR}
-  ARCHIVE DESTINATION ${VC_OUT_DIR}
-)
+message(STATUS "")
+message(STATUS "========================================")
+message(STATUS "Visual Core Enterprise Edition C++ Modules")
+message(STATUS "========================================")
+message(STATUS "")
+
+# 选项：可以选择性编译模块
+option(BUILD_CAMERA_MODULE "Build camera module" ON)
+option(BUILD_DETECTION_MODULE "Build detection module" ON)
+
+# 编译相机模块
+if(BUILD_CAMERA_MODULE)
+    message(STATUS "Configuring Camera Module...")
+    add_subdirectory(camera)
+    message(STATUS "Camera Module configured.")
+    message(STATUS "")
+endif()
+
+# 编译检测模块
+if(BUILD_DETECTION_MODULE)
+    message(STATUS "Configuring Detection Module...")
+    add_subdirectory(detection)
+    message(STATUS "Detection Module configured.")
+    message(STATUS "")
+endif()
+
+message(STATUS "========================================")
+message(STATUS "All modules configured successfully!")
+message(STATUS "Output directory: ${VC_OUT_DIR}")
+message(STATUS "========================================")
+message(STATUS "")
+
+# 构建说明
+message(STATUS "Build Instructions:")
+message(STATUS "  mkdir build && cd build")
+message(STATUS "  cmake ..")
+message(STATUS "  cmake --build .")
+message(STATUS "")
+message(STATUS "To disable a module:")
+message(STATUS "  cmake -DBUILD_CAMERA_MODULE=OFF ..")
+message(STATUS "  cmake -DBUILD_DETECTION_MODULE=OFF ..")
+message(STATUS "")

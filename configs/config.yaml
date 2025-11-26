@@ -29,12 +29,14 @@ camera:
     - level: client
       password: CLIENT
 model:
-  backend: auto
+  backend: auto  # auto | pc | rknn
+  use_cpp: true  # 启用C++后端（适用于RKNN模式，提供更高性能）
   model_name: seasoning_11.18.pt
   model_file: models
   path: models/seasoning_11.18.pt
   conf_threshold: 0.7
   nms_threshold: 0.6
+  target: rk3588  # RKNN目标平台
 DetectionServer:
   enable: true
   host: 192.168.2.126

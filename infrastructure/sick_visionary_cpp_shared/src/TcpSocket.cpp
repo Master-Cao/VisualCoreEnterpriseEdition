@@ -11,6 +11,11 @@
 
 #include <iostream>
 
+// 添加TCP_NODELAY定义所需的头文件
+#ifndef _WIN32
+#include <netinet/tcp.h>
+#endif
+
 namespace visionary
 {
 
