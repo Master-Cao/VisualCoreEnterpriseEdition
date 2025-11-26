@@ -267,45 +267,7 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             if class_id == 0:  # seasoning
                 seasoning_detections.append(det_box)
         
-        if logger:
-            try:
-                logger.info(f"检测结果: 总计{total_count}个目标, seasoning目标{len(seasoning_detections)}个")
-                logger.info(f"ROI配置: {len(roi_list)}个ROI, minArea={min_area}")
-                for i, roi in enumerate(roi_list):
-                    logger.info(f"  ROI[{i}]: priority={roi.get('priority')}, name={roi.get('name')}, "
-                               f"区域=[{roi.get('x1')},{roi.get('y1')}]-[{roi.get('x2')},{roi.get('y2')}]")
-                
-                # 详细检查每个seasoning目标
-                logger.info(f"开始检查{len(seasoning_detections)}个seasoning目标:")
-                for idx, det_box in enumerate(seasoning_detections):
-                    xmin = float(getattr(det_box, 'xmin', 0))
-                    ymin = float(getattr(det_box, 'ymin', 0))
-                    xmax = float(getattr(det_box, 'xmax', 0))
-                    ymax = float(getattr(det_box, 'ymax', 0))
-                    center_x = 0.5 * (xmin + xmax)
-                    center_y = 0.5 * (ymin + ymax)
-                    
-                    # 获取mask面积
-                    mask = getattr(det_box, 'seg_mask', None)
-                    if mask is not None and isinstance(mask, np.ndarray):
-                        area = float(np.sum(mask > 0))
-                    else:
-                        area = (xmax - xmin) * (ymax - ymin)
-                    
-                    # 检查是否在ROI内
-                    in_roi = False
-                    roi_name = "无"
-                    for roi in roi_list:
-                        if RoiProcessor.is_point_in_roi(center_x, center_y, roi):
-                            in_roi = True
-                            roi_name = roi.get('name', 'unknown')
-                            break
-                    
-                    logger.info(f"  目标[{idx}]: 中心点=({center_x:.1f},{center_y:.1f}), "
-                               f"面积={area:.0f}px, 在ROI内={in_roi}, ROI={roi_name}, "
-                               f"通过面积过滤={area >= min_area}")
-            except Exception as e:
-                logger.error(f"调试日志输出失败: {e}")
+        # 精简日志：移除详细检测结果输出
         
         # 使用多ROI优先级选择：ROI区域内(仅判断中点) > ROI优先级高 > Mask大于minArea > Mask最大
         best_target = TargetSelector.select_by_multi_roi_priority(
@@ -315,24 +277,7 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
         )
         time_points['filter_and_select'] = (time.time() - t0_filter) * 1000.0
         
-        if logger:
-            try:
-                if best_target:
-                    logger.info(f"✓ 已选择最佳目标: target_id={best_target.get('target_id')}, "
-                               f"area={best_target.get('area'):.0f}px, priority={best_target.get('roi_priority')}, "
-                               f"roi_name={best_target.get('roi_name')}")
-                else:
-                    logger.warning(f"✗ 未选择到最佳目标！seasoning={len(seasoning_detections)}个, "
-                                  f"roi_list={len(roi_list)}个, minArea={min_area}")
-                    # 给出可能的原因提示
-                    if len(seasoning_detections) == 0:
-                        logger.warning("  → 原因: 没有检测到seasoning类别(class_id=0)的目标")
-                    elif len(roi_list) == 0:
-                        logger.warning("  → 原因: 没有配置ROI区域")
-                    else:
-                        logger.warning("  → 原因: 所有seasoning目标被过滤（不在ROI内 或 面积小于minArea）")
-            except Exception:
-                pass
+        # 精简日志：移除最佳目标选择的详细输出
         
         # 统计各ROI中的目标数量（通过中点判断 + 深度阈值递增计数）
         # 逻辑：p_count = ROI内物体总数（基数） + 所有物体的深度增量总和
@@ -402,20 +347,14 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
             
             if priority == 1:
                 p1_depth_increment += increments
-                if logger:
-                    logger.debug(f"P1 ROI目标: world_z={world_z:.2f}, delta={delta:.2f}, 深度增量+{increments}")
             elif priority == 2:
                 p2_depth_increment += increments
-                if logger:
-                    logger.debug(f"P2 ROI目标: world_z={world_z:.2f}, delta={delta:.2f}, 深度增量+{increments}")
         
         # 计算最终计数：基数 + 深度增量
         p1_count = p1_base_count + p1_depth_increment
         p2_count = p2_base_count + p2_depth_increment
         
-        if logger:
-            logger.info(f"P1 ROI计数: 基数={p1_base_count}, 深度增量={p1_depth_increment}, 总计={p1_count}")
-            logger.info(f"P2 ROI计数: 基数={p2_base_count}, 深度增量={p2_depth_increment}, 总计={p2_count}")
+        # 精简日志：移除ROI计数的详细输出
         
         in_p1roi = p1_count
         in_p2roi = p2_count
@@ -425,19 +364,44 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
         best_target_info = None
         robot_coordinates = None
         
-        # 如果有有效目标，进行坐标计算
+        # ===== 获取TCP间隔信息和遮挡检测配置 =====
+        tcp_interval_ms = _req.data.get('tcp_interval_ms', 0.0)
+        occlusion_cfg = roi_cfg.get('occlusion', {})
+        interval_threshold = float(occlusion_cfg.get('intervalThreshold', 700))
+        ignore_count = int(occlusion_cfg.get('ignoreCount', 3))
+        
+        # ===== 遮挡检测：优先检查TCP间隔和忽略状态 =====
         t0_coordinate = time.time()
-        if best_target:
+        
+        # 步骤1：检查是否在忽略期内
+        if ctx.occlusion_ignore_remaining > 0:
+            # 还在忽略期内，直接返回遮挡标志
+            tcp_response = "-1,0,0,0,0"
+            ctx.occlusion_ignore_remaining -= 1
             if logger:
-                logger.info(f"开始计算最佳目标坐标: depth_data={'有' if depth_data else '无'}, "
-                           f"camera_params={'有' if camera_params else '无'}")
-            
-            if depth_data is None:
-                if logger:
-                    logger.error("✗ 坐标计算失败: depth_data为None，无法获取深度信息")
-            elif camera_params is None:
-                if logger:
-                    logger.error("✗ 坐标计算失败: camera_params为None，无法获取相机参数")
+                logger.warning(
+                    f"[OCCLUSION] 机器人遮挡期间（忽略中）: 剩余忽略次数={ctx.occlusion_ignore_remaining}, "
+                    f"返回遮挡标志='{tcp_response}'"
+                )
+            # 跳过正常的坐标计算，直接进入可视化阶段
+        
+        # 步骤2：检查当前TCP间隔是否超过阈值（无论是否有目标）
+        elif tcp_interval_ms > interval_threshold:
+            # TCP间隔超过阈值，启动遮挡忽略模式（无论是否检测到目标）
+            ctx.occlusion_ignore_remaining = ignore_count
+            tcp_response = "-1,0,0,0,0"
+            if logger:
+                logger.warning(
+                    f"[OCCLUSION-START] 检测到机器人动作: TCP间隔={tcp_interval_ms:.1f}ms > {interval_threshold}ms, "
+                    f"启动遮挡忽略模式，接下来{ignore_count}次检测将返回遮挡标志, "
+                    f"检测{total_count}个目标/有效目标={'有' if best_target else '无'}, 返回='{tcp_response}'"
+                )
+        
+        # 步骤3：正常检测流程 - 如果有有效目标，进行坐标计算
+        elif best_target:
+            # 精简日志：移除坐标计算过程的详细输出
+            if depth_data is None or camera_params is None:
+                pass  # 静默处理，错误会在最终结果中体现
             else:
                 # 第一步：像素坐标 + 深度 → 相机坐标 → 世界坐标（使用相机内置的 cam2worldMatrix）
                 # 注意：这里不传入 transformation_matrix，让 CoordinateProcessor 只完成第一步转换
@@ -452,9 +416,6 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                     # coord_info['camera_3d'] 实际是世界坐标（相机已通过 cam2worldMatrix 转换）
                     world_xyz = coord_info['camera_3d']
                     
-                    if logger:
-                        logger.info(f"第一步转换完成: 世界坐标=[{world_xyz[0]:.2f}, {world_xyz[1]:.2f}, {world_xyz[2]:.2f}]")
-                    
                     # 第二步：世界坐标 → 机器人坐标（使用外部标定的 transformation_matrix.json）
                     robot_coordinates = _world_to_robot_using_calib(world_xyz, ctx.project_root)
                     
@@ -463,10 +424,6 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                         
                         # 构建TCP响应字符串：p1_flag,p2_flag,x,y,z
                         tcp_response = f"{in_p1roi},{in_p2roi},{x:.2f},{y:.2f},{z:.2f}"
-                        
-                        if logger:
-                            logger.info(f"第二步转换完成: 机器人坐标=[{x:.2f}, {y:.2f}, {z:.2f}]")
-                            logger.info(f"✓ 坐标计算成功: TCP响应='{tcp_response}'")
                     else:
                         # 没有外部标定矩阵，使用世界坐标
                         x, y, z = world_xyz[0], world_xyz[1], world_xyz[2]
@@ -474,9 +431,6 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                         
                         # 构建TCP响应字符串：p1_flag,p2_flag,x,y,z
                         tcp_response = f"{in_p1roi},{in_p2roi},{x:.2f},{y:.2f},{z:.2f}"
-                        
-                        if logger:
-                            logger.warning(f"未找到外部标定矩阵，使用世界坐标: TCP响应='{tcp_response}'")
                     
                     # 在图像上绘制最佳目标的中心点
                     center_x, center_y = coord_info['center']
@@ -501,9 +455,14 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                         'in_p1roi': in_p1roi,
                         'in_p2roi': in_p2roi
                     }
-                else:
-                    if logger:
-                        logger.error(f"✗ 坐标计算失败: CoordinateProcessor返回None (可能深度值无效或计算出错)")
+            
+            # 找到有效目标，清零遮挡忽略计数（虽然前面已经检查过了，但这里为了安全再次清零）
+            ctx.occlusion_ignore_remaining = 0
+        
+        # 步骤4：无有效目标且TCP间隔正常的情况
+        else:
+            # TCP间隔正常且无有效目标，返回正常的无目标响应
+            tcp_response = "0,0,0,0,0"
         
         time_points['coordinate_calc'] = (time.time() - t0_coordinate) * 1000.0
         
@@ -526,14 +485,8 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
         if sftp:
             try:
                 upload_info = SftpHelper.upload_image_bytes(sftp, jpg, prefix="catch")
-                if not upload_info and logger:
-                    logger.warning("SFTP上传失败，但继续返回检测结果")
-            except Exception as e:
-                if logger:
-                    logger.warning(f"SFTP上传异常: {e}，但继续返回检测结果")
-        else:
-            if logger:
-                logger.debug("SFTP未启用，跳过图像上传")
+            except Exception:
+                pass  # 精简日志：SFTP上传错误静默处理
         time_points['sftp_upload'] = (time.time() - t0_upload) * 1000.0
         
         # 获取SFTP配置并构建完整路径（如果有上传信息）
@@ -587,7 +540,7 @@ def handle_catch(_req: MQTTResponse, ctx: CommandContext) -> MQTTResponse:
                     logger.info(
                         f"抓取命令完成: 检测{total_count}个目标, "
                         f"p1roi内{p1_count}个, p2roi内{p2_count}个, "
-                        f"无有效目标, TCP响应='0,0,0,0,0' | 总耗时={time_points['total']:.1f}ms"
+                        f"无有效目标, TCP响应='{tcp_response}' | 总耗时={time_points['total']:.1f}ms"
                     )
                     logger.info(f"性能分析: {perf_details}")
             except Exception:

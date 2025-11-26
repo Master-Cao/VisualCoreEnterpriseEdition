@@ -201,6 +201,7 @@ class CommManager:
                     pass
                 
                 # ===== 特别记录catch命令的时间戳 =====
+                tcp_interval_ms = 0.0  # 默认值
                 if command.lower() == "catch":
                     self._catch_count += 1
                     
@@ -210,14 +211,17 @@ class CommManager:
                     if self._last_catch_time is None:
                         # 第一次catch命令
                         if self._logger:
-                            self._logger.info(f"📊 [CATCH #{self._catch_count:04d}] 时间={readable_time} | 时间戳={receive_time:.6f} | 客户端={client_id}")
+                            self._logger.info(f"[CATCH #{self._catch_count:04d}] 时间={readable_time} | 时间戳={receive_time:.6f} | 客户端={client_id}")
                     else:
                         # 计算与上一次的时间间隔
-                        interval_ms = (receive_time - self._last_catch_time) * 1000.0
+                        tcp_interval_ms = (receive_time - self._last_catch_time) * 1000.0
                         if self._logger:
-                            self._logger.info(f"📊 [CATCH #{self._catch_count:04d}] 时间={readable_time} | 时间戳={receive_time:.6f} | 间隔={interval_ms:.1f}ms | 客户端={client_id}")
+                            self._logger.info(f"[CATCH #{self._catch_count:04d}] 时间={readable_time} | 时间戳={receive_time:.6f} | 间隔={tcp_interval_ms:.1f}ms | 客户端={client_id}")
                     
                     self._last_catch_time = receive_time
+                    
+                    # ===== 将间隔时间传递给处理器 =====
+                    data['tcp_interval_ms'] = tcp_interval_ms
                 
                 req = MQTTResponse(
                     command=command,

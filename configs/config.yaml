@@ -63,6 +63,13 @@ roi:
   enable: true
   minArea: 3000
   depthThreshold: 665
+  # 机器人遮挡检测配置
+  occlusion:
+    # TCP间隔阈值（毫秒），超过此值视为机器人正在执行抓取动作
+    intervalThreshold: 700
+    # 忽略次数：当TCP间隔超过阈值后，接下来的N次检测都返回遮挡标志-1,0,0,0,0
+    # 例如：设为3表示检测到间隔>700ms后，接下来的3次检测都忽略（避免机器人动作期间误触发皮带移动）
+    ignoreCount: 3
   regions:
   - name: main_work_area
     shape: rectangle
