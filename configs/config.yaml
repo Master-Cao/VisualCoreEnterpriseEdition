@@ -30,7 +30,7 @@ camera:
       password: CLIENT
 model:
   backend: auto  # auto | pc | rknn
-  use_cpp: true  # 启用C++后端（适用于RKNN模式，提供更高性能）
+  use_cpp: false  # 启用C++后端（适用于RKNN模式，提供更高性能）
   model_name: seasoning_11.18.pt
   model_file: models
   path: models/seasoning_11.18.pt
