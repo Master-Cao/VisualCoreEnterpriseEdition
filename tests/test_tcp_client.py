@@ -9,12 +9,13 @@ TCP 客户端测试工具
 import socket
 import time
 import sys
+import threading
 
 
 class TCPTestClient:
     """简单的 TCP 测试客户端"""
     
-    def __init__(self, host: str = "192.168.2.126", port: int = 8888):
+    def __init__(self, host: str = "192.168.2.90", port: int = 8888):
         """
         初始化 TCP 客户端
         
@@ -26,6 +27,8 @@ class TCPTestClient:
         self.port = port
         self.socket = None
         self.connected = False
+        self.receive_thread = None
+        self.stop_receive = False
     
     def connect(self, timeout: int = 5) -> bool:
         """
@@ -58,16 +61,17 @@ class TCPTestClient:
             print(f"✗ 连接失败: {e}")
             return False
     
-    def send_command(self, command: str, timeout: float = 10.0) -> str:
+    def send_command(self, command: str, wait_response: bool = False, timeout: float = 10.0) -> str:
         """
-        发送命令到服务器并接收响应
+        发送命令到服务器
         
         Args:
             command: 要发送的命令（自动添加换行符）
-            timeout: 接收超时时间（秒）
+            wait_response: 是否同步等待响应（默认False，由后台线程接收）
+            timeout: 接收超时时间（秒），仅在 wait_response=True 时有效
             
         Returns:
-            服务器响应字符串，失败返回空字符串
+            服务器响应字符串（wait_response=True时），失败返回空字符串
         """
         if not self.connected or not self.socket:
             print("✗ 未连接到服务器")
@@ -78,32 +82,76 @@ class TCPTestClient:
             if not command.endswith('\n'):
                 command += '\n'
             
-            print(f"\n→ 发送: {command.strip()}")
+            timestamp = time.strftime("%H:%M:%S")
+            print(f"[{timestamp}] → 发送: {command.strip()}")
             self.socket.sendall(command.encode('utf-8'))
             
-            # 接收响应（设置临时超时）
-            self.socket.settimeout(timeout)
-            response = self.socket.recv(4096).decode('utf-8').strip()
+            # 如果需要同步等待响应
+            if wait_response:
+                self.socket.settimeout(timeout)
+                response = self.socket.recv(4096).decode('utf-8').strip()
+                print(f"[{timestamp}] ← 响应: {response}")
+                return response
             
-            print(f"← 响应: {response}")
-            return response
+            return ""
             
         except socket.timeout:
             print(f"✗ 接收响应超时 (>{timeout}s)")
             return ""
         except Exception as e:
-            print(f"✗ 命令发送/接收失败: {e}")
+            print(f"✗ 命令发送失败: {e}")
             return ""
+    
+    def _receive_loop(self):
+        """后台接收线程：持续接收服务器推送的消息"""
+        while not self.stop_receive and self.connected:
+            try:
+                if self.socket:
+                    self.socket.settimeout(1.0)  # 设置超时，避免阻塞
+                    data = self.socket.recv(4096)
+                    if data:
+                        message = data.decode('utf-8').strip()
+                        if message:
+                            # 输出接收到的消息（带时间戳）
+                            timestamp = time.strftime("%H:%M:%S")
+                            print(f"\n[{timestamp}] ← 服务器: {message}")
+                            print("请输入命令 > ", end='', flush=True)  # 重新显示提示符
+                    else:
+                        # 连接断开
+                        if self.connected:
+                            print("\n✗ 服务器断开连接")
+                            self.connected = False
+                        break
+            except socket.timeout:
+                continue  # 超时则继续循环
+            except Exception as e:
+                if self.connected:
+                    print(f"\n✗ 接收消息出错: {e}")
+                break
+    
+    def start_receive_thread(self):
+        """启动后台接收线程"""
+        if not self.receive_thread or not self.receive_thread.is_alive():
+            self.stop_receive = False
+            self.receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
+            self.receive_thread.start()
     
     def disconnect(self):
         """断开连接"""
+        self.stop_receive = True
+        self.connected = False
+        
+        # 等待接收线程结束
+        if self.receive_thread and self.receive_thread.is_alive():
+            self.receive_thread.join(timeout=2.0)
+        
         if self.socket:
             try:
                 self.socket.close()
                 print(f"\n✓ 已断开连接")
             except Exception as e:
                 print(f"✗ 断开连接失败: {e}")
-        self.connected = False
+        
         self.socket = None
     
     def test_catch_command(self, count: int = 1, interval: float = 0.5):
@@ -129,7 +177,7 @@ class TCPTestClient:
             print(f"\n--- 测试 {i+1}/{count} ---")
             
             start_time = time.time()
-            response = self.send_command("catch")
+            response = self.send_command("catch", wait_response=True)
             elapsed = (time.time() - start_time) * 1000  # 转换为毫秒
             
             if response:
@@ -178,16 +226,21 @@ def interactive_mode():
     print("TCP 客户端测试工具 - 交互模式")
     print("="*60)
     print("输入命令并按回车发送，输入 'quit' 或 'exit' 退出")
+    print("后台线程会自动接收并显示服务器推送的消息")
     print("="*60 + "\n")
     
-    client = TCPTestClient(host="192.168.2.126", port=8888)
+    client = TCPTestClient(host="192.168.2.90", port=8888)
     
     if not client.connect():
         return
     
+    # 启动后台接收线程
+    client.start_receive_thread()
+    print("✓ 已启动后台接收线程\n")
+    
     try:
         while True:
-            command = input("\n请输入命令 > ").strip()
+            command = input("请输入命令 > ").strip()
             
             if command.lower() in ('quit', 'exit', 'q'):
                 print("退出交互模式...")
@@ -196,7 +249,8 @@ def interactive_mode():
             if not command:
                 continue
             
-            client.send_command(command)
+            # 发送命令（不等待响应，由后台线程接收）
+            client.send_command(command, wait_response=False)
     
     except KeyboardInterrupt:
         print("\n\n检测到 Ctrl+C，退出...")

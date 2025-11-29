@@ -16,6 +16,7 @@ from handlers import config as h_config
 from handlers import camera as h_camera
 from handlers import detection as h_detection
 from handlers import calibration as h_calibration
+from handlers import system as h_system
 
 
 class CommandRouter:
@@ -23,7 +24,8 @@ class CommandRouter:
         self._handlers: Dict[str, Callable[[MQTTResponse], MQTTResponse]] = {}
         self._ctx = CommandContext(
             config={}, camera=None, detector=None, sftp=None, monitor=None, logger=None,
-            project_root=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            project_root=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+            initializer=None, gpio=None
         )
 
     def register(self, command: str, handler: Callable[[MQTTResponse], MQTTResponse]):
@@ -58,6 +60,8 @@ class CommandRouter:
         self.register(VisionCoreCommands.COORDINATE_CALIBRATION.value, lambda req: h_calibration.handle_coordinate_calibration(req, self._ctx))
         # 抓取命令（检测+坐标转换）
         self.register(VisionCoreCommands.CATCH.value, lambda req: h_detection.handle_catch(req, self._ctx))
+        self.register(VisionCoreCommands.START.value, lambda req: h_system.handle_start(req, self._ctx))
+        self.register(VisionCoreCommands.STOP.value, lambda req: h_system.handle_stop(req, self._ctx))
 
     # 处理逻辑已全部下沉至 services/comm/handlers/*
 

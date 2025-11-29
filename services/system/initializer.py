@@ -8,13 +8,13 @@ import threading
 from services.comm.command_router import CommandRouter
 from services.comm.comm_manager import CommManager
 from services.camera.sick_camera import SickCamera
-try:
-    from services.camera.cpp_camera import CppCamera
-except Exception:
-    CppCamera = None
 from services.detection.factory import create_detector
+from services.servo.gpio import GPIO
 from services.sftp.sftp_client import SftpClient
 from .monitor import SystemMonitor
+
+# 注意：CppCamera 不在此处导入，因为需要先调用 _prepare_cpp_camera_libs()
+# 它会在 _start_camera_with_retry() 中动态导入
 
 
 class SystemInitializer:
@@ -27,6 +27,7 @@ class SystemInitializer:
         self.detector = None
         self.sftp: Optional[SftpClient] = None
         self.monitor: Optional[SystemMonitor] = None
+        self.gpio: Optional[GPIO] = None
         
         # 添加停止事件，用于响应Ctrl+C中断
         self._stop_event = threading.Event()
@@ -37,6 +38,177 @@ class SystemInitializer:
         self._retry_delay = int(bm.get("retry_delay", 5))
         self._check_interval = int(mon.get("check_interval", 30))
         self._failure_threshold = int(mon.get("failure_threshold", 1))
+
+    def _get_project_root(self) -> str:
+        """
+        获取项目根目录的绝对路径
+        
+        Returns:
+            str: 项目根目录的绝对路径
+        """
+        import os
+        # initializer.py 在 services/system/ 目录下，向上两级到达项目根
+        current_file = os.path.abspath(__file__)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), "..", ".."))
+        return project_root
+    
+    def _detect_platform(self) -> str:
+        try:
+            import platform
+            sysname = (platform.system() or "").lower()
+            machine = (platform.machine() or "").lower()
+            if "arm" in machine or "aarch" in machine:
+                return "aarch"
+            if sysname.startswith("windows"):
+                return "windows"
+            return "linux"
+        except Exception:
+            return "linux"
+
+    def _apply_platform_overrides(self):
+        p = self._detect_platform()
+        roi = (self._cfg.get("roi") or {})
+        chosen = None
+        if p == "aarch" and isinstance(roi.get("aarch"), dict):
+            chosen = roi.get("aarch")
+        elif p == "windows" and isinstance(roi.get("windows"), dict):
+            chosen = roi.get("windows")
+        if isinstance(chosen, dict):
+            regions = chosen.get("regions") or []
+            roi["regions"] = regions
+            self._cfg["roi"] = roi
+        model = (self._cfg.get("model") or {})
+        camera_cfg = (self._cfg.get("camera") or {})
+        if p == "aarch":
+            model["backend"] = "rknn"
+            model["use_cpp"] = True
+            camera_cfg["backend"] = "cpp"
+            sub = model.get("aarch") or {}
+            if isinstance(sub, dict):
+                if sub.get("path"):
+                    model["path"] = sub.get("path")
+                if sub.get("model_name"):
+                    model["model_name"] = sub.get("model_name")
+                if sub.get("model_file"):
+                    model["model_file"] = sub.get("model_file")
+        elif p == "windows":
+            model["backend"] = "pc"
+            model["use_cpp"] = False
+            camera_cfg["backend"] = "cpp"
+            sub = model.get("windows") or {}
+            if isinstance(sub, dict):
+                if sub.get("path"):
+                    model["path"] = sub.get("path")
+                if sub.get("model_name"):
+                    model["model_name"] = sub.get("model_name")
+                if sub.get("model_file"):
+                    model["model_file"] = sub.get("model_file")
+        self._cfg["model"] = model
+        self._cfg["camera"] = camera_cfg
+
+    def _prepare_cpp_camera_libs(self):
+        """
+        准备C++相机库的路径
+        
+        根据平台自动选择正确的库目录：
+        - Windows: vclib/x86/*.pyd
+        - Linux ARM: vclib/aarch/*.so
+        - Linux x86_64: vclib/x86/*.so (如果存在)
+        """
+        try:
+            import os, sys, platform
+            
+            # 获取项目根目录
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            
+            # 确保项目根在 sys.path
+            if repo_root not in sys.path:
+                sys.path.insert(0, repo_root)
+            
+            # vclib 根目录
+            vclib_root = os.path.join(repo_root, "vclib")
+            
+            # 检测平台
+            sysname = (platform.system() or "").lower()
+            machine = (platform.machine() or "").lower()
+            
+            # 确定子目录
+            if sysname.startswith("windows"):
+                subdir = "x86"
+                platform_name = f"Windows ({machine})"
+            elif "arm" in machine or "aarch" in machine:
+                subdir = "aarch"
+                platform_name = f"Linux ARM ({machine})"
+            else:
+                # Linux x86_64 也使用 x86 目录
+                subdir = "x86"
+                platform_name = f"Linux x86 ({machine})"
+            
+            # 构建完整路径
+            lib_path = os.path.join(vclib_root, subdir)
+            
+            # 记录平台信息
+            if self._logger:
+                self._logger.info(f"准备C++库路径 | 平台: {platform_name}")
+                self._logger.debug(f"  vclib路径: {lib_path}")
+            
+            # 检查目录是否存在
+            if not os.path.isdir(lib_path):
+                if self._logger:
+                    self._logger.warning(f"  ✗ C++库目录不存在: {lib_path}")
+                return
+            
+            # 列出目录中的文件（调试用）
+            if self._logger:
+                try:
+                    files = os.listdir(lib_path)
+                    lib_files = [f for f in files if f.endswith(('.pyd', '.so', '.dll'))]
+                    if lib_files:
+                        self._logger.debug(f"  找到库文件: {', '.join(lib_files)}")
+                    else:
+                        self._logger.warning(f"  ✗ 目录中未找到库文件(.pyd/.so/.dll)")
+                except Exception as e:
+                    self._logger.debug(f"  无法列出目录: {e}")
+            
+            # Windows: 添加DLL搜索目录
+            if sysname.startswith("windows"):
+                try:
+                    if hasattr(os, "add_dll_directory"):
+                        os.add_dll_directory(lib_path)
+                        if self._logger:
+                            self._logger.debug(f"  ✓ 已添加DLL搜索目录")
+                    else:
+                        if self._logger:
+                            self._logger.warning(f"  ⚠ os.add_dll_directory 不可用 (Python < 3.8)")
+                except Exception as e:
+                    if self._logger:
+                        self._logger.warning(f"  ✗ 添加DLL搜索目录失败: {e}")
+            
+            # 添加到 sys.path（用于Python模块导入）
+            if lib_path not in sys.path:
+                sys.path.append(lib_path)
+                if self._logger:
+                    self._logger.debug(f"  ✓ 已添加到sys.path")
+            
+            # Linux: 设置 LD_LIBRARY_PATH
+            if not sysname.startswith("windows"):
+                ld = os.environ.get("LD_LIBRARY_PATH", "")
+                if lib_path not in ld:
+                    new_ld = (ld + (":" if ld else "") + lib_path)
+                    os.environ["LD_LIBRARY_PATH"] = new_ld
+                    if self._logger:
+                        self._logger.debug(f"  ✓ 已设置LD_LIBRARY_PATH")
+            
+            if self._logger:
+                self._logger.info(f"✓ C++库路径准备完成 | {lib_path}")
+                
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"✗ 准备C++库路径失败: {e}")
+                import traceback
+                self._logger.debug(traceback.format_exc())
+
+    
 
     # 装配与启动
     def start(self):
@@ -53,6 +225,8 @@ class SystemInitializer:
         - SFTP客户端 (SFTP Client)
         """
         # 路由注册（在通信启动前完成），并先绑定可用依赖
+        self._apply_platform_overrides()
+        self._prepare_cpp_camera_libs()
         self.router.register_default()
         self.router.bind(config=self._cfg, logger=self._logger, initializer=self)
         
@@ -96,6 +270,44 @@ class SystemInitializer:
         
         if self._logger:
             self._logger.info("✓ 系统启动完成 | 关键组件全部就绪")
+
+    def attach_gpio(self, chip: str, pin: int, consumer: str = "vision-gpio") -> bool:
+        try:
+            gpio = GPIO()
+            ok = gpio.open(chip, int(pin), consumer=consumer)
+            if not ok:
+                return False
+            self.gpio = gpio
+            self.router.bind(gpio=self.gpio)
+            if self.monitor is not None:
+                name = f"GPIO-{chip}:{pin}"
+                self.monitor.register(
+                    name=name,
+                    check_func=lambda: bool(self.gpio and self.gpio.healthy),
+                    restart_func=lambda: (self.detach_gpio() or True) and self.attach_gpio(chip, pin, consumer),
+                    is_critical=False,
+                )
+            if self._logger:
+                self._logger.info(f"GPIO 已附加: chip={chip} pin={pin}")
+            return True
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"GPIO 附加失败: {e}")
+            return False
+
+    def detach_gpio(self) -> None:
+        try:
+            if self.gpio:
+                try:
+                    self.gpio.close()
+                except Exception:
+                    pass
+                self.gpio = None
+            self.router.bind(gpio=None)
+            if self._logger:
+                self._logger.info("GPIO 已分离")
+        except Exception:
+            pass
     
     def _start_tcp_with_retry(self):
         """启动TCP服务器（主线程无限重试直到成功）"""
@@ -162,18 +374,46 @@ class SystemInitializer:
         # 默认使用cpp后端，除非明确配置为sick或cpp不可用
         backend = str(cam_cfg.get("backend", "cpp")).strip().lower()
         
-        # 优先使用CppCamera（性能更好）
-        if backend == "cpp" and CppCamera is not None:
-            self.camera = CppCamera(
-                ip=ip,
-                port=port,
-                use_single_step=use_single,
-                logger=self._logger,
-                login_attempts=login_attempts,
-            )
-            if self._logger:
-                self._logger.info("使用 C++ 相机后端（高性能模式）")
-        elif backend == "sick" or CppCamera is None:
+        if backend == "cpp":
+            # 先准备库路径
+            self._prepare_cpp_camera_libs()
+            
+            # 动态导入 CppCamera
+            try:
+                import importlib
+                if self._logger:
+                    self._logger.debug("正在动态导入 CppCamera 模块...")
+                
+                m = importlib.import_module("services.camera.cpp_camera")
+                local_cpp = getattr(m, "CppCamera", None)
+                
+                if local_cpp is None:
+                    raise RuntimeError("CppCamera 模块未找到或未导出 CppCamera 类")
+                
+                self.camera = local_cpp(
+                    ip=ip,
+                    port=port,
+                    use_single_step=use_single,
+                    logger=self._logger,
+                    login_attempts=login_attempts,
+                )
+                
+                if self._logger:
+                    self._logger.info("✓ 使用 C++ 相机后端（高性能模式）")
+                    
+            except ImportError as e:
+                error_msg = (
+                    f"无法导入C++相机模块: {e}\n"
+                    f"  可能原因：\n"
+                    f"  1. vclib 目录中缺少所需的库文件\n"
+                    f"  2. 库文件与当前Python版本不兼容\n"
+                    f"  3. 缺少依赖的运行时库（如MSVC运行库）\n"
+                    f"  解决方案：检查 vclib/x86 或 vclib/aarch 目录"
+                )
+                if self._logger:
+                    self._logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
+        elif backend == "sick":
             self.camera = SickCamera(
                 ip=ip,
                 port=port,
@@ -182,32 +422,9 @@ class SystemInitializer:
                 login_attempts=login_attempts,
             )
             if self._logger:
-                if CppCamera is None:
-                    self._logger.warning("C++ 相机模块不可用，回退到 Python 后端")
-                else:
-                    self._logger.info("使用 Python 相机后端（配置指定）")
+                self._logger.info("使用 Python 相机后端（配置指定）")
         else:
-            # 无效的backend配置，默认使用cpp或回退到sick
-            if CppCamera is not None:
-                self.camera = CppCamera(
-                    ip=ip,
-                    port=port,
-                    use_single_step=use_single,
-                    logger=self._logger,
-                    login_attempts=login_attempts,
-                )
-                if self._logger:
-                    self._logger.warning(f"未知的相机后端配置 '{backend}'，使用 C++ 后端")
-            else:
-                self.camera = SickCamera(
-                    ip=ip,
-                    port=port,
-                    use_single_step=use_single,
-                    logger=self._logger,
-                    login_attempts=login_attempts,
-                )
-                if self._logger:
-                    self._logger.warning(f"未知的相机后端配置 '{backend}'，且 C++ 模块不可用，使用 Python 后端")
+            raise ValueError(f"无效的相机后端配置: '{backend}'")
         
         # 无限重试直到相机连接成功（可被Ctrl+C中断）
         retry_count = 0
@@ -351,16 +568,33 @@ class SystemInitializer:
                     (0, 0, 255),  # 红色
                     2
                 )
-            # 保存到debug目录
-            debug_dir = "debug"
+            # 保存到debug目录（使用绝对路径）
+            project_root = self._get_project_root()
+            debug_dir = os.path.join(project_root, "debug")
+            debug_dir = os.path.normpath(debug_dir)
+            
             os.makedirs(debug_dir, exist_ok=True)
-            # 保存检测结果
+            
+            # 保存输入图像（原始图像）
+            input_path = os.path.join(debug_dir, "warmup_input_image.jpg")
+            cv2.imwrite(input_path, image)
+            
+            # 保存检测结果（可视化图像）
             output_path = os.path.join(debug_dir, "warmup_detection_result.jpg")
-            cv2.imwrite(output_path, vis_image)
+            success = cv2.imwrite(output_path, vis_image)
+            
+            if success and self._logger:
+                self._logger.info(f"✓ 预热检测结果已保存")
+                self._logger.debug(f"  输入图像: {input_path}")
+                self._logger.debug(f"  检测结果: {output_path}")
+            elif not success and self._logger:
+                self._logger.warning(f"✗ 保存预热检测结果失败: {output_path}")
             
         except Exception as e:
             if self._logger:
-                self._logger.warning(f"可视化预热检测失败: {e}")
+                self._logger.warning(f"✗ 可视化预热检测失败: {e}")
+                import traceback
+                self._logger.debug(traceback.format_exc())
     
     def _warmup_detector(self):
         """
@@ -383,12 +617,16 @@ class SystemInitializer:
             import cv2
             import os
             
-            warmup_image_path = os.path.join("configs", "warmup_image.jpg")
+            # 构建绝对路径
+            project_root = self._get_project_root()
+            warmup_image_path = os.path.join(project_root, "configs", "warmup_image.jpg")
+            warmup_image_path = os.path.normpath(warmup_image_path)
             
             # 检查文件是否存在
             if not os.path.exists(warmup_image_path):
                 if self._logger:
                     self._logger.warning(f"预热图像不存在: {warmup_image_path} | 跳过预热")
+                    self._logger.debug(f"项目根目录: {project_root}")
                 return
             
             # 读取图像（灰度模式）
@@ -411,9 +649,8 @@ class SystemInitializer:
             if self._logger:
                 self._logger.info(f"✓ 检测器预热完成 | 耗时={warmup_time:.1f}ms | 检测数={detection_count}")
             
-            # 可视化检测结果（调试用）
-            if self._cfg.get("board_mode", {}).get("debug_warmup", False):
-                self._visualize_warmup_detections(warmup_image, detections)
+            # 可视化检测结果并保存（每次预热都保存）
+            self._visualize_warmup_detections(warmup_image, detections)
                     
         except Exception as e:
             if self._logger:
@@ -540,8 +777,10 @@ class SystemInitializer:
         资源释放顺序：
         1. 停止监控器（所有监控线程）
         2. 停止通信服务（TCP、MQTT）
-        3. 断开相机连接
-        4. 断开SFTP连接
+        3. 释放检测器资源
+        4. 断开相机连接
+        5. 断开SFTP连接
+        6. 强制垃圾回收
         """
         self._is_stopping = True
         self._stop_event.set()
@@ -570,25 +809,58 @@ class SystemInitializer:
                     if self._logger:
                         self._logger.error(f"停止通信服务失败: {e}")
             
-            # 3. 断开相机
+            # 3. 释放检测器资源
+            if self.detector:
+                try:
+                    if self._logger:
+                        self._logger.info("释放检测器资源...")
+                    if hasattr(self.detector, 'release'):
+                        self.detector.release()
+                    # 显式删除引用
+                    self.detector = None
+                except Exception as e:
+                    if self._logger:
+                        self._logger.error(f"释放检测器资源失败: {e}")
+            
+            # 4. 释放相机资源
             if self.camera:
                 try:
                     if self._logger:
-                        self._logger.info("断开相机...")
-                    self.camera.disconnect()
+                        self._logger.info("释放相机资源...")
+                    # 只调用 release()，内部会处理 disconnect
+                    if hasattr(self.camera, 'release'):
+                        self.camera.release()
+                    else:
+                        # 如果没有 release 方法，才调用 disconnect
+                        if hasattr(self.camera, 'disconnect'):
+                            self.camera.disconnect()
+                    # 显式删除引用
+                    del self.camera
+                    self.camera = None
                 except Exception as e:
                     if self._logger:
-                        self._logger.error(f"断开相机失败: {e}")
+                        self._logger.error(f"释放相机资源失败: {e}")
             
-            # 4. 断开SFTP
+            # 5. 断开SFTP
             if self.sftp:
                 try:
                     if self._logger:
                         self._logger.info("断开SFTP...")
                     self.sftp.disconnect(verbose=True)
+                    self.sftp = None
                 except Exception as e:
                     if self._logger:
                         self._logger.error(f"断开SFTP失败: {e}")
+            
+            # 6. 强制垃圾回收
+            try:
+                import gc
+                gc.collect()
+                if self._logger:
+                    self._logger.info("已执行垃圾回收")
+            except Exception as e:
+                if self._logger:
+                    self._logger.warning(f"垃圾回收失败: {e}")
             
         finally:
             if self._logger:
@@ -626,11 +898,15 @@ class SystemInitializer:
                     try:
                         import yaml
                         import os
-                        cfg_path = os.path.join(os.getcwd(), "configs", "config.yaml")
+                        # 使用绝对路径
+                        project_root = self._get_project_root()
+                        cfg_path = os.path.join(project_root, "configs", "config.yaml")
+                        cfg_path = os.path.normpath(cfg_path)
+                        
                         with open(cfg_path, "r", encoding="utf-8") as f:
                             self._cfg = yaml.safe_load(f) or {}
                         if self._logger:
-                            self._logger.info("已从文件重新加载配置")
+                            self._logger.info(f"已从文件重新加载配置: {cfg_path}")
                     except Exception as e:
                         if self._logger:
                             self._logger.error(f"重新加载配置失败: {e}，使用当前配置")

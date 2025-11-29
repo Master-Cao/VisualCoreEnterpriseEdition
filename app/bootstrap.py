@@ -107,7 +107,67 @@ class Application:
         try:
             print("正在停止系统...")
             self.initializer.stop()
+            
+            # 显式删除主要组件引用
+            if hasattr(self.initializer, 'camera'):
+                self.initializer.camera = None
+            if hasattr(self.initializer, 'detector'):
+                self.initializer.detector = None
+            if hasattr(self.initializer, 'comm'):
+                self.initializer.comm = None
+            if hasattr(self.initializer, 'monitor'):
+                self.initializer.monitor = None
+            if hasattr(self.initializer, 'router'):
+                self.initializer.router = None
+            if hasattr(self.initializer, 'sftp'):
+                self.initializer.sftp = None
+            
+            # 清理 initializer 本身
+            del self.initializer
+            self.initializer = None
+            
+            # 强制垃圾回收（多次，确保循环引用也被清理）
+            import gc
+            print("执行垃圾回收...")
+            for i in range(3):
+                collected = gc.collect()
+                if collected > 0:
+                    print(f"  第{i+1}次回收: 释放了 {collected} 个对象")
+            
+            # 清理所有 numpy 缓存（如果使用了 numpy）
+            try:
+                import numpy as np
+                # 清理内部缓存
+                if hasattr(np, '_cleanup'):
+                    np._cleanup()
+            except Exception:
+                pass
+            
+            # 清理 matplotlib 缓存（如果使用了）
+            try:
+                import matplotlib
+                matplotlib.pyplot.close('all')
+            except Exception:
+                pass
+            
+            # 清理 OpenCV 缓存（如果使用了）
+            try:
+                import cv2
+                # OpenCV 不需要特殊清理，但可以尝试
+                pass
+            except Exception:
+                pass
+            
+            # 清理 PyTorch 缓存（如果使用了）
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            
             print("✓ 系统已完全停止")
+            
         except Exception as e:
             print(f"关闭过程中发生异常: {e}")
             raise

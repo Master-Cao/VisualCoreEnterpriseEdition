@@ -171,4 +171,13 @@ class PCUltralyticsDetector(DetectionService):
         """释放模型资源"""
         if self._model is not None:
             self._logger.info("Ultralytics模型资源已释放")
+            del self._model
             self._model = None
+    
+    def __del__(self):
+        """析构函数：确保模型资源被释放"""
+        try:
+            if hasattr(self, '_model') and self._model is not None:
+                del self._model
+        except Exception:
+            pass

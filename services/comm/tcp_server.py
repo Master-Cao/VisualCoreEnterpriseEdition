@@ -232,3 +232,32 @@ class TcpServer:
                 time.sleep(self._heartbeat_interval)
             except Exception:
                 time.sleep(1)
+
+    def send_to_client(self, cid: str, message: str) -> bool:
+        with self._lock:
+            info = self._clients.get(cid)
+        if not info or not info.is_active:
+            return False
+        try:
+            msg = str(message)
+            if not msg.endswith("\r\n"):
+                msg += "\r\n"
+            info.socket.sendall(msg.encode("utf-8"))
+            return True
+        except Exception:
+            try:
+                info.socket.close()
+            except Exception:
+                pass
+            info.is_active = False
+            with self._lock:
+                self._clients.pop(cid, None)
+            return False
+
+    def broadcast(self, message: str) -> Dict[str, bool]:
+        with self._lock:
+            cids = list(self._clients.keys())
+        results: Dict[str, bool] = {}
+        for cid in cids:
+            results[cid] = self.send_to_client(cid, message)
+        return results

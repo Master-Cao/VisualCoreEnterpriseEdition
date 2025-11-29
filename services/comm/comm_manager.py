@@ -219,6 +219,21 @@ class CommManager:
                     
                     self._last_catch_time = receive_time
                 
+                # ===== 特殊处理：机器人完成消息 =====
+                if command.lower() == "complete":
+                    # 调用系统处理函数，解除抓取锁定
+                    try:
+                        from handlers.system import handle_robot_complete
+                        handle_robot_complete(command, self._router._ctx)
+                        if self._logger:
+                            self._logger.info(f"✓ 已处理complete消息 | 客户端={client_id}")
+                        # 返回确认消息给机器人
+                        return "ok"
+                    except Exception as e:
+                        if self._logger:
+                            self._logger.error(f"处理complete消息失败: {e}")
+                        return None
+                
                 req = MQTTResponse(
                     command=command,
                     component="tcp",
@@ -256,3 +271,19 @@ class CommManager:
                     self._logger.error(f"TCP route error: {e}")
                 return None
         return _on_message
+
+    def push_to_client(self, cid: str, text: str) -> bool:
+        if not self._tcp:
+            return False
+        try:
+            return self._tcp.send_to_client(cid, str(text))
+        except Exception:
+            return False
+
+    def broadcast(self, text: str) -> Dict[str, bool]:
+        if not self._tcp:
+            return {}
+        try:
+            return self._tcp.broadcast(str(text))
+        except Exception:
+            return {}

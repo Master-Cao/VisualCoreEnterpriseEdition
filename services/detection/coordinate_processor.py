@@ -113,14 +113,14 @@ class CoordinateProcessor:
             return None
     
     @staticmethod
-    def _get_robust_depth_at_point(x: int, y: int, depth_data: List[float], 
+    def _get_robust_depth_at_point(x: int, y: int, depth_data, 
                                    width: int, height: int, radius: int = 1) -> float:
         """
         获取指定点的稳定深度值，通过邻近像素平均值提高稳定性
         
         Args:
             x, y: 目标点坐标
-            depth_data: 深度数据数组
+            depth_data: 深度数据数组（list, tuple, 或 numpy.ndarray）
             width, height: 图像尺寸
             radius: 邻近像素搜索半径
         
@@ -149,7 +149,7 @@ class CoordinateProcessor:
     def calculate_coordinate_for_detection(
         cls,
         detection: Any,
-        depth_data: List[float],
+        depth_data,  # 支持 list, tuple, numpy.ndarray
         camera_params: Any,
         transformation_matrix: Optional[np.ndarray] = None
     ) -> Optional[Dict[str, Any]]:
@@ -158,7 +158,7 @@ class CoordinateProcessor:
         
         Args:
             detection: 单个检测框对象
-            depth_data: 深度数据（一维数组）
+            depth_data: 深度数据（支持 list, tuple, numpy.ndarray，一维）
             camera_params: 相机参数对象
             transformation_matrix: 坐标变换矩阵（相机→机器人）
         
@@ -176,6 +176,10 @@ class CoordinateProcessor:
             计算失败返回None
         """
         try:
+            # 验证输入参数
+            if detection is None or camera_params is None or depth_data is None:
+                return None
+            
             # 提取相机参数
             width = camera_params.width
             height = camera_params.height
@@ -205,17 +209,17 @@ class CoordinateProcessor:
             cx_int = int(round(center_x))
             cy_int = int(round(center_y))
             
-            # 检查 depth_data 格式
-            if not isinstance(depth_data, (list, tuple)):
-                import sys
-                print(f"[CoordinateProcessor] depth_data 类型错误: {type(depth_data)}", file=sys.stderr)
+            # 检查 depth_data 格式（支持 list, tuple, numpy array）
+            if not isinstance(depth_data, (list, tuple, np.ndarray)):
                 return None
+            
+            # 如果是 numpy 数组，确保是一维的（展平）
+            if isinstance(depth_data, np.ndarray) and depth_data.ndim != 1:
+                depth_data = depth_data.flatten()
             
             depth = cls._get_robust_depth_at_point(cx_int, cy_int, depth_data, width, height, radius=1)
             
             if depth <= 0:
-                import sys
-                print(f"[CoordinateProcessor] 深度值无效: depth={depth}, center=({cx_int},{cy_int})", file=sys.stderr)
                 return None
             
             # 第一步：计算3D世界坐标（相机已通过 m_c2w 转换为世界坐标）

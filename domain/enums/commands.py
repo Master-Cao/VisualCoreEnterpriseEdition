@@ -26,6 +26,8 @@ class VisionCoreCommands(Enum):
     # 标定命令
     GET_CALIBRAT_IMAGE = "get_calibrat_image"
     COORDINATE_CALIBRATION = "coordinate_calibration"
+    START = "start"
+    STOP = "stop"
 
     def __eq__(self, other):
         if isinstance(other, str):

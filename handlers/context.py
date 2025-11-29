@@ -14,5 +14,6 @@ class CommandContext:
     logger: Optional[Any]
     project_root: str
     initializer: Optional[Any] = None
+    gpio: Optional[Any] = None
 
 

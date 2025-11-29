@@ -4,36 +4,17 @@
 """
 C++ RKNN检测器后端
 使用C++实现的高性能检测器
+
+注意：此模块要求 vc_detection_cpp 模块必须可用
+     如果导入失败，将直接抛出异常，不会回退到Python版本
 """
 
 from typing import List, Optional
 import logging
 import numpy as np
-import sys
-import os
 
-# 尝试导入C++模块
-try:
-    # 添加C++模块的路径（支持多种路径布局）
-    base_dir = os.path.dirname(__file__)
-    possible_paths = [
-        os.path.join(base_dir, '../cpp/dist/Release'),  # Windows 编译输出
-        os.path.join(base_dir, '../cpp/dist'),           # 直接在 dist 目录
-        os.path.join(base_dir, '../cpp/build'),          # Linux 编译输出
-    ]
-    
-    # 尝试所有可能的路径
-    for cpp_dist_path in possible_paths:
-        cpp_dist_path = os.path.abspath(cpp_dist_path)
-        if os.path.exists(cpp_dist_path) and cpp_dist_path not in sys.path:
-            sys.path.insert(0, cpp_dist_path)
-    
-    import vc_detection_cpp
-    CPP_MODULE_AVAILABLE = True
-except ImportError as e:
-    vc_detection_cpp = None
-    CPP_MODULE_AVAILABLE = False
-    _import_error = str(e)
+# 直接导入，失败则抛出异常
+import vc_detection_cpp
 
 from .base import DetectionService, DetectionBox
 
@@ -62,42 +43,76 @@ class CPPRKNNDetector(DetectionService):
         初始化C++ RKNN检测器
         
         Args:
-            model_path: RKNN模型路径
+            model_path: RKNN模型路径（相对路径或绝对路径）
             conf_threshold: 置信度阈值
             nms_threshold: NMS阈值
             logger: 日志记录器
             target: 目标RKNPU平台
             device_id: 设备ID（暂不支持）
         """
-        if not CPP_MODULE_AVAILABLE:
-            raise RuntimeError(
-                f"C++检测模块未编译或加载失败。\n"
-                f"错误信息: {_import_error}\n"
-                f"请确保已编译C++模块：\n"
-                f"  cd services/cpp\n"
-                f"  mkdir build && cd build\n"
-                f"  cmake ..\n"
-                f"  cmake --build .\n"
-            )
+        import os
         
         self._logger = logger or logging.getLogger(__name__)
-        self._model_path = model_path
         self._conf = conf_threshold
         self._nms = nms_threshold
         self._target = target
         
+        # 处理模型路径：转换为绝对路径
+        if not os.path.isabs(model_path):
+            # 相对路径：相对于项目根目录
+            # 获取项目根目录（向上两级：cpp_backend.py -> detection -> services -> 根目录）
+            current_file = os.path.abspath(__file__)
+            project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), "..", ".."))
+            abs_model_path = os.path.join(project_root, model_path)
+        else:
+            # 已经是绝对路径
+            abs_model_path = model_path
+        
+        # 规范化路径
+        abs_model_path = os.path.normpath(abs_model_path)
+        self._model_path = abs_model_path
+        
+        # 验证文件是否存在
+        if not os.path.exists(abs_model_path):
+            error_msg = (
+                f"模型文件不存在: {abs_model_path}\n"
+                f"原始路径: {model_path}\n"
+                f"项目根目录: {project_root if not os.path.isabs(model_path) else 'N/A'}\n"
+                f"请检查：\n"
+                f"  1. 模型文件是否已下载到正确位置\n"
+                f"  2. 配置文件中的路径是否正确"
+            )
+            if self._logger:
+                self._logger.error(f"✗ {error_msg}")
+            raise FileNotFoundError(error_msg)
+        
+        if self._logger:
+            self._logger.debug(f"模型路径解析: {model_path} -> {abs_model_path}")
+        
         # 创建C++检测器实例
         try:
             self._detector = vc_detection_cpp.RKNNDetector(
-                model_path, 
+                abs_model_path,  # 使用绝对路径
                 conf_threshold, 
                 nms_threshold, 
                 target
             )
-            self._logger.info("C++ RKNN检测器初始化成功")
+            self._released = False  # 防止重复释放
+            if self._logger:
+                self._logger.info(f"✓ C++ RKNN检测器初始化成功 | 模型: {os.path.basename(abs_model_path)}")
         except Exception as e:
-            self._logger.error(f"创建C++检测器失败: {e}")
-            raise
+            if self._logger:
+                self._logger.error(f"✗ 创建C++ RKNN检测器失败: {e}")
+            raise RuntimeError(
+                f"创建C++ RKNN检测器失败: {e}\n"
+                f"模型路径: {abs_model_path}\n"
+                f"目标平台: {target}\n"
+                f"请检查：\n"
+                f"  1. 模型格式是否正确(.rknn)\n"
+                f"  2. RKNN运行时库是否已安装\n"
+                f"  3. NPU驱动是否正常\n"
+                f"  4. 模型是否与目标平台匹配"
+            ) from e
     
     def load(self):
         """加载RKNN模型"""
@@ -162,44 +177,32 @@ class CPPRKNNDetector(DetectionService):
     
     def release(self):
         """释放RKNN资源"""
+        # 防止重复释放
+        if hasattr(self, '_released') and self._released:
+            return
+        
         if hasattr(self, '_detector') and self._detector:
             try:
                 self._detector.release()
-                self._logger.info("C++ RKNN资源已释放")
+                if self._logger:
+                    self._logger.info("✓ C++ RKNN资源已释放")
             except Exception as e:
-                self._logger.warning(f"释放C++ RKNN资源时出错: {e}")
-
-
-def is_cpp_detector_available() -> bool:
-    """
-    检查C++检测器是否可用
+                if self._logger:
+                    self._logger.warning(f"释放C++ RKNN资源时出错: {e}")
+            finally:
+                try:
+                    del self._detector
+                except Exception:
+                    pass
+                self._detector = None
+                if hasattr(self, '_released'):
+                    self._released = True
     
-    Returns:
-        bool: True表示可用，False表示不可用
-    """
-    return CPP_MODULE_AVAILABLE
-
-
-def get_cpp_detector_info() -> dict:
-    """
-    获取C++检测器信息
-    
-    Returns:
-        dict: 包含版本、可用性等信息的字典
-    """
-    info = {
-        'available': CPP_MODULE_AVAILABLE,
-        'version': None,
-        'error': None
-    }
-    
-    if CPP_MODULE_AVAILABLE:
+    def __del__(self):
+        """析构函数：确保C++资源被释放"""
         try:
-            info['version'] = getattr(vc_detection_cpp, '__version__', 'unknown')
-        except:
+            if not getattr(self, '_released', False):
+                self.release()
+        except Exception:
             pass
-    else:
-        info['error'] = _import_error
-    
-    return info
 

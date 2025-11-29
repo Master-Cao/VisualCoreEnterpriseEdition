@@ -87,13 +87,14 @@ class TargetSelector:
                 center_x = 0.5 * (xmin + xmax)
                 center_y = 0.5 * (ymin + ymax)
                 
-                # 获取mask面积
+                # 使用mask面积（与system.py保持一致）
                 mask = getattr(detection, 'seg_mask', None)
-                if mask is not None and isinstance(mask, np.ndarray):
-                    area = float(np.sum(mask > 0))
-                else:
-                    # 没有mask，使用矩形面积
-                    area = (xmax - xmin) * (ymax - ymin)
+                if mask is None or not isinstance(mask, np.ndarray):
+                    # 没有mask，跳过该检测结果
+                    filtered_by_area += 1
+                    continue
+                
+                area = float(np.sum(mask > 0))  # mask像素数
                 
                 # 面积过滤
                 if area < min_area:
