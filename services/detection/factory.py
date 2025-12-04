@@ -49,37 +49,31 @@ def create_detector(config: dict, logger: Optional[Any] = None) -> DetectionServ
         target = str(model_cfg.get("target", "rk3588"))
         device_id = model_cfg.get("device_id")  # 可选
         
-        # 优先尝试使用C++实现
+        # 严格按照配置执行，不回退
         if use_cpp:
-            try:
-                from .cpp_backend import CPPRKNNDetector
-                if logger:
-                    logger.info("使用C++实现的RKNN检测器")
-                return CPPRKNNDetector(
-                    model_path=model_path, 
-                    conf_threshold=conf, 
-                    nms_threshold=nms, 
-                    logger=logger,
-                    target=target,
-                    device_id=device_id
-                )
-            except ImportError as e:
-                if logger:
-                    logger.warning(f"C++检测器不可用，回退到Python版本: {e}")
-            except Exception as e:
-                if logger:
-                    logger.warning(f"创建C++检测器失败，回退到Python版本: {e}")
-        
-        # 使用Python实现
-        if logger:
-            logger.info("使用Python实现的RKNN检测器")
-        return RKNNDetector(
-            model_path=model_path, 
-            conf_threshold=conf, 
-            nms_threshold=nms, 
-            logger=logger,
-            target=target,
-            device_id=device_id
-        )
+            # 使用C++实现（必须可用，否则失败）
+            from .cpp_backend import CPPRKNNDetector
+            if logger:
+                logger.info("配置要求使用C++实现的RKNN检测器")
+            return CPPRKNNDetector(
+                model_path=model_path, 
+                conf_threshold=conf, 
+                nms_threshold=nms, 
+                logger=logger,
+                target=target,
+                device_id=device_id
+            )
+        else:
+            # 使用Python实现
+            if logger:
+                logger.info("配置要求使用Python实现的RKNN检测器")
+            return RKNNDetector(
+                model_path=model_path, 
+                conf_threshold=conf, 
+                nms_threshold=nms, 
+                logger=logger,
+                target=target,
+                device_id=device_id
+            )
     
     raise ValueError(f"Unknown detection backend: {backend}")

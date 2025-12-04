@@ -394,8 +394,18 @@ class RKNNDetector(DetectionService):
         if self._rknn is not None:
             try:
                 self._rknn.release()
+                del self._rknn
                 self._logger.info("RKNN资源已释放")
             except Exception as e:
                 self._logger.warning(f"释放RKNN资源时出错: {e}")
             finally:
                 self._rknn = None
+    
+    def __del__(self):
+        """析构函数：确保RKNN资源被释放"""
+        try:
+            if hasattr(self, '_rknn') and self._rknn is not None:
+                self._rknn.release()
+                del self._rknn
+        except Exception:
+            pass

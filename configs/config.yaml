@@ -30,16 +30,21 @@ camera:
       password: CLIENT
 model:
   backend: auto  # auto | pc | rknn
-  use_cpp: false  # 启用C++后端（适用于RKNN模式，提供更高性能）
-  model_name: seasoning_11.18.pt
-  model_file: models
-  path: models/seasoning_11.18.pt
-  conf_threshold: 0.7
-  nms_threshold: 0.6
+  use_cpp: true  # 启用C++后端（适用于RKNN模式，提供更高性能）
+  windows:
+    model_name: seasoning_11.18.pt
+    model_file: models
+    path: models/seasoning_11.18.pt
+  aarch:
+    model_name: seasoning_11.18.float.rknn
+    model_file: models
+    path: models/seasoning_11.18.float.rknn
+  conf_threshold: 0.75  # 提高到0.75，减少候选框数量（原0.7）
+  nms_threshold: 0.65   # 稍微提高NMS阈值，减少重叠框（原0.6）
   target: rk3588  # RKNN目标平台
 DetectionServer:
   enable: true
-  host: 192.168.2.126
+  host: 192.168.2.90
   port: 8888
   max_connections: 15
   buffer_size: 4096
@@ -63,13 +68,7 @@ roi:
   enable: true
   minArea: 3000
   depthThreshold: 665
-  # 机器人遮挡检测配置
-  occlusion:
-    # TCP间隔阈值（毫秒），超过此值视为机器人正在执行抓取动作
-    intervalThreshold: 600
-    # 忽略次数：当TCP间隔超过阈值后，接下来的N次检测都返回遮挡标志-1,0,0,0,0
-    # 例如：设为3表示检测到间隔>700ms后，接下来的3次检测都忽略（避免机器人动作期间误触发皮带移动）
-    ignoreCount: 3
+  stabilityWaitTime: 0.15  # 传送带停止后等待物体稳定的时间（秒），建议0.1-0.2
   regions:
   - name: main_work_area
     shape: rectangle
@@ -78,6 +77,10 @@ roi:
     offsetx: 0
     offsety: 30
     priority: 1
+    gpio:
+      enable: true
+      pin: 20
+      chip: dev/gpiochip3
   - name: backup_area
     shape: rectangle
     width: 150
@@ -85,6 +88,10 @@ roi:
     offsetx: 90
     offsety: 140
     priority: 2
+    gpio:
+      enable: true
+      pin: 29
+      chip: dev/gpiochip3
 sftp:
   enable: false
   host: 192.168.2.126

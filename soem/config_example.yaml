@@ -1,0 +1,88 @@
+# EtherCAT 主站配置示例
+
+# 网卡接口配置
+network:
+  # Windows: 使用 "\\Device\\NPF_{GUID}" 格式
+  # 使用 ipconfig /all 查看网卡 GUID
+  interface_windows: "\\Device\\NPF_{12345678-1234-1234-1234-123456789012}"
+  
+  # Linux: 使用网卡名称
+  interface_linux: "eth0"  # 或 enp0s3, eno1 等
+
+# 主站配置
+master:
+  # 循环周期（秒）
+  cycle_time: 0.001  # 1ms
+  
+  # 进入 OPERATIONAL 超时（毫秒）
+  operational_timeout: 5000
+  
+  # 日志级别
+  log_level: INFO  # DEBUG, INFO, WARNING, ERROR
+
+# 伺服驱动器配置
+servos:
+  # 轴 0 配置
+  - slave_index: 0
+    name: "传送带"
+    type: "XinJeDS5C1S"  # 信捷 DS5C1S 伺服
+    
+    # 工作模式
+    mode: "PV"  # PP=位置模式, PV=速度模式（推荐）
+    
+    # 参数配置
+    parameters:
+      # 位置限制（编码器计数）
+      position_min: -100000
+      position_max: 100000
+      
+      # 速度限制（RPM）
+      velocity_max: 3000
+      
+      # 加速度限制（RPM/s）
+      acceleration: 10000
+      
+      # 减速度限制（RPM/s）
+      deceleration: 10000
+      
+      # 编码器分辨率（脉冲/转）
+      encoder_resolution: 131072
+      
+      # 齿轮比
+      gear_ratio: 1.0
+  
+
+# 安全配置
+safety:
+  # 急停输入
+  emergency_stop_enabled: true
+  
+  # 超时保护（秒）
+  communication_timeout: 1.0
+  
+  # 错误处理
+  auto_recovery: false  # 自动恢复故障
+  max_recovery_attempts: 3
+
+# 监控配置
+monitoring:
+  # 统计信息输出间隔（秒）
+  statistics_interval: 1.0
+  
+  # 性能监控
+  cycle_time_warning: 0.002  # 循环超时警告阈值（秒）
+  
+  # 错误率警告阈值
+  error_rate_warning: 0.01  # 1%
+
+# 高级配置
+advanced:
+  # 线程优先级（Linux）
+  realtime_priority: 99
+  
+  # CPU 亲和性（Linux，CPU 核心编号）
+  cpu_affinity: [0]
+  
+  # 内存锁定（Linux）
+  lock_memory: true
+
